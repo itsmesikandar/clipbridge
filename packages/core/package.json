@@ -1,0 +1,29 @@
+{
+  "name": "@clipbridge/core",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Platform-neutral domain and application logic shared by all ClipBridge apps.",
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    }
+  },
+  "scripts": {
+    "lint": "eslint . --max-warnings=0",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage"
+  },
+  "devDependencies": {
+    "@clipbridge/eslint-config": "workspace:*",
+    "@clipbridge/tsconfig": "workspace:*",
+    "@vitest/coverage-v8": "5.0.3",
+    "eslint": "10.12.0",
+    "typescript": "6.0.3",
+    "vitest": "5.0.3"
+  }
+}

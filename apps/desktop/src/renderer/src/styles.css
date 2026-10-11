@@ -1,0 +1,49 @@
+:root {
+  color-scheme: light dark;
+  font-family:
+    system-ui,
+    -apple-system,
+    'Segoe UI',
+    Roboto,
+    sans-serif;
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+body {
+  margin: 0;
+}
+
+.app {
+  padding: 24px;
+}
+
+.app__title {
+  margin: 0 0 16px;
+  font-size: 20px;
+  font-weight: 600;
+}
+
+.about {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 4px 16px;
+  margin: 0;
+}
+
+.about dt {
+  opacity: 0.7;
+}
+
+.about dd {
+  margin: 0;
+  font-variant-numeric: tabular-nums;
+}
+
+.about--muted {
+  opacity: 0.7;
+}
+
+.about--error {
+  color: #c62828;
+}

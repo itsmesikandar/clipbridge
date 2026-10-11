@@ -1,0 +1,12 @@
+{
+  "extends": "@clipbridge/tsconfig/react-dom.json",
+  "compilerOptions": {
+    "composite": true,
+    "noEmit": false,
+    "declaration": true,
+    "emitDeclarationOnly": true,
+    "outDir": "node_modules/.cache/tsc-web",
+    "types": ["vite/client"]
+  },
+  "include": ["src/renderer", "src/shared"]
+}

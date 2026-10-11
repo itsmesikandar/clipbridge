@@ -1,0 +1,13 @@
+packages:
+  - apps/*
+  - packages/*
+
+# React Native's tooling expects a flat node_modules layout.
+nodeLinker: hoisted
+
+# Install scripts are blocked by default; allow only what needs to run.
+# Native modules below ship prebuilt binaries, so their build scripts stay off.
+allowBuilds:
+  '@parcel/watcher': false
+  esbuild: true
+  unrs-resolver: false

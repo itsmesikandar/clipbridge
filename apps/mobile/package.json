@@ -1,0 +1,52 @@
+{
+  "name": "@clipbridge/mobile",
+  "version": "0.0.0",
+  "private": true,
+  "description": "ClipBridge mobile app (Android, iOS).",
+  "main": "expo-router/entry",
+  "scripts": {
+    "start": "expo start --dev-client",
+    "android": "expo run:android",
+    "ios": "expo run:ios",
+    "prebuild": "expo prebuild",
+    "doctor": "expo-doctor",
+    "lint": "eslint . --max-warnings=0",
+    "typecheck": "tsc --noEmit",
+    "test": "jest"
+  },
+  "dependencies": {
+    "@clipbridge/core": "workspace:*",
+    "expo": "~57.0.27",
+    "expo-constants": "~57.0.21",
+    "expo-dev-client": "~57.0.19",
+    "expo-linking": "~57.0.12",
+    "expo-router": "~57.0.25",
+    "expo-splash-screen": "~57.0.9",
+    "expo-status-bar": "~57.0.1",
+    "expo-system-ui": "~57.0.4",
+    "react": "19.2.3",
+    "react-native": "0.86.3",
+    "react-native-gesture-handler": "~2.32.0",
+    "react-native-reanimated": "4.5.1",
+    "react-native-safe-area-context": "~5.7.0",
+    "react-native-screens": "~4.26.0",
+    "react-native-worklets": "0.10.1"
+  },
+  "devDependencies": {
+    "@clipbridge/eslint-config": "workspace:*",
+    "@clipbridge/tsconfig": "workspace:*",
+    "@react-native/metro-config": "0.86.3",
+    "@types/jest": "29.5.14",
+    "@types/react": "19.2.18",
+    "eslint": "10.12.0",
+    "jest": "29.7.0",
+    "jest-expo": "57.0.5",
+    "typescript": "6.0.3"
+  },
+  "jest": {
+    "preset": "jest-expo",
+    "testMatch": [
+      "<rootDir>/src/**/*.test.{ts,tsx}"
+    ]
+  }
+}

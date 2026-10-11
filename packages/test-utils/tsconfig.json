@@ -1,0 +1,4 @@
+{
+  "extends": "@clipbridge/tsconfig/base.json",
+  "include": ["src"]
+}

@@ -1,0 +1,41 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+out/
+build/
+coverage/
+*.tsbuildinfo
+
+# Expo / React Native
+.expo/
+expo-env.d.ts
+web-build/
+.metro-health-check*
+apps/mobile/ios/
+apps/mobile/android/
+.kotlin/
+
+# Signing material — never commit
+*.jks
+*.keystore
+*.p8
+*.p12
+*.key
+*.pem
+*.mobileprovision
+
+# Environment
+.env
+.env.*
+
+# Logs
+*.log
+npm-debug.*
+pnpm-debug.*
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/

@@ -1,0 +1,33 @@
+{
+  "name": "@clipbridge/desktop",
+  "version": "0.0.0",
+  "private": true,
+  "description": "ClipBridge desktop app (Windows, macOS).",
+  "main": "./out/main/index.js",
+  "scripts": {
+    "postinstall": "install-electron",
+    "dev": "electron-vite dev",
+    "build": "electron-vite build",
+    "preview": "electron-vite preview",
+    "lint": "eslint . --max-warnings=0",
+    "typecheck": "tsc --noEmit -p tsconfig.node.json --composite false && tsc --noEmit -p tsconfig.web.json --composite false",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "@clipbridge/core": "workspace:*",
+    "@clipbridge/eslint-config": "workspace:*",
+    "@clipbridge/tsconfig": "workspace:*",
+    "@types/node": "24.19.2",
+    "@types/react": "19.2.18",
+    "@types/react-dom": "19.2.7",
+    "@vitejs/plugin-react": "5.2.0",
+    "electron": "44.7.0",
+    "electron-vite": "5.0.0",
+    "eslint": "10.12.0",
+    "react": "19.2.3",
+    "react-dom": "19.2.3",
+    "typescript": "6.0.3",
+    "vite": "7.3.7",
+    "vitest": "5.0.3"
+  }
+}

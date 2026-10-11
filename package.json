@@ -1,0 +1,36 @@
+{
+  "name": "clipbridge",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Sync clipboard (text, URLs, images) between your laptops and phones over the local network.",
+  "packageManager": "pnpm@12.3.4",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "dev:desktop": "pnpm --filter @clipbridge/desktop dev",
+    "dev:mobile": "pnpm --filter @clipbridge/mobile start",
+    "lint": "pnpm -r --parallel lint",
+    "typecheck": "pnpm -r --parallel typecheck",
+    "test": "pnpm -r test",
+    "check": "pnpm lint && pnpm typecheck && pnpm test",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "prepare": "husky"
+  },
+  "devDependencies": {
+    "@commitlint/cli": "21.2.3",
+    "@commitlint/config-conventional": "21.2.3",
+    "husky": "9.1.7",
+    "lint-staged": "17.6.0",
+    "prettier": "3.9.10",
+    "typescript": "6.0.3"
+  },
+  "lint-staged": {
+    "{apps,packages}/**/*.{ts,tsx}": [
+      "eslint --fix --max-warnings=0",
+      "prettier --write"
+    ],
+    "*.{js,mjs,cjs,json,md,yml,yaml,css,html}": "prettier --write"
+  }
+}
