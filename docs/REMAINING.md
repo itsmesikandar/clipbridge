@@ -7,22 +7,21 @@ Each milestone doc in `docs/milestones/` has the full detail; this file is the t
 
 ## 0. State of the repo
 
-| Milestone                    | Status                                                 | Branch / commit            |
-| ---------------------------- | ------------------------------------------------------ | -------------------------- |
-| M0 Foundation                | ✅ done                                                | `67b0728`                  |
-| M1 Core                      | ✅ done                                                | `60806c8`                  |
-| M2 Desktop LAN sync          | ✅ done                                                | `5680d5f`                  |
-| M3 Pairing and groups        | ✅ done                                                | `cd98675`                  |
-| M4 Android                   | 🟡 works on a real phone; manual checks left (§3)      | `ef24eb3`                  |
-| M5 iOS                       | 🟡 code done, **never built** (needs Mac, §2)          | `e9c8707`                  |
-| M6 Images                    | 🟡 code done, phone check left (§3)                    | `eecdca1`                  |
-| M7 Diagnostics and hardening | 🔨 in progress, core part done, **not committed** (§1) | branch `feat/m7-hardening` |
-| M8 Packaging and release     | ⏳ not started (§4)                                    | —                          |
+| Milestone                    | Status                                            | Branch / commit                         |
+| ---------------------------- | ------------------------------------------------- | --------------------------------------- |
+| M0 Foundation                | ✅ done                                           | `67b0728`                               |
+| M1 Core                      | ✅ done                                           | `60806c8`                               |
+| M2 Desktop LAN sync          | ✅ done                                           | `5680d5f`                               |
+| M3 Pairing and groups        | ✅ done                                           | `cd98675`                               |
+| M4 Android                   | 🟡 works on a real phone; manual checks left (§3) | `ef24eb3`                               |
+| M5 iOS                       | 🟡 code done, **never built** (needs Mac, §2)     | `e9c8707`                               |
+| M6 Images                    | 🟡 code done, phone check left (§3)               | `eecdca1`                               |
+| M7 Diagnostics and hardening | 🔨 in progress, core part done (§1)               | `b5c87f6` on branch `feat/m7-hardening` |
+| M8 Packaging and release     | ⏳ not started (§4)                               | —                                       |
 
 **The repo has no git remote.** Before switching machines:
 
-1. Commit the M7 work in progress, e.g. `git commit -m "wip(core): hardening for M7"`.
-2. Push to a private GitHub repository, or copy the folder without `node_modules`, `dist`, `out` and `android/build`.
+Push to a private GitHub repository, or copy the folder without `node_modules`, `dist`, `out` and `android/build`.
 
 ---
 
@@ -30,7 +29,7 @@ Each milestone doc in `docs/milestones/` has the full detail; this file is the t
 
 Spec: `docs/milestones/M7-diagnostics-and-hardening.md`.
 
-### Done (in `packages/core`, uncommitted)
+### Done (in `packages/core`, commit `b5c87f6`)
 
 - Hybrid logical clock for `createdAt` (`sync-engine.ts`), so a laptop clock that runs minutes behind no longer breaks newest-wins. Test: "newest wins even when a laptop clock is 5 minutes behind".
 - Handshake rate limit: 5 failures/min per IP. The device then gets an `ERROR AUTH_FAILED` frame. Also a cap of 32 inbound connections (`peer-manager.ts`).
