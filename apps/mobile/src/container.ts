@@ -10,6 +10,7 @@ import { Platform } from 'react-native';
 
 import { ExpoNetworkInfo } from './adapters/expo-network-info';
 import { ExpoNotifier } from './adapters/expo-notifier';
+import { makeThumbnail } from './adapters/image-tools';
 import {
   AsyncJsonStorage,
   ExpoClipboard,
@@ -70,6 +71,7 @@ function createContainer(): MobileContainer {
     logFile: 'In-app log (Diagnostics)',
     // Phones never show a pairing QR code.
     renderQr: () => Promise.resolve(''),
+    makeThumbnail,
   });
 
   return { controller, logger, clipboard, preferences: new MobilePreferences(storage) };

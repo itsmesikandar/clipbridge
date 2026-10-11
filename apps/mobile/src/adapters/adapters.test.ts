@@ -3,6 +3,7 @@ import * as Network from 'expo-network';
 
 import { pickLanInterface, toNetworkKind, toSnapshot } from './expo-network-info';
 import { describeClip } from './expo-notifier';
+import { decodeImageBase64, isSupportedMime } from './image-tools';
 import { causeFromMessage } from './rn-websocket-transport';
 import { toDiscoveredService } from './zeroconf-discovery';
 
@@ -121,5 +122,20 @@ describe('toDiscoveredService', () => {
   it('ignores services with missing fields or no IPv4', () => {
     expect(toDiscoveredService({ ...service, txt: { v: '1' } })).toBeNull();
     expect(toDiscoveredService({ ...service, ipv4: [], addresses: ['fe80::1'] })).toBeNull();
+  });
+});
+
+describe('image tools', () => {
+  it('accepts PNG and JPEG as they are; others get converted', () => {
+    expect(isSupportedMime('image/png')).toBe(true);
+    expect(isSupportedMime('image/jpeg')).toBe(true);
+    expect(isSupportedMime('image/heic')).toBe(false);
+    expect(isSupportedMime(null)).toBe(false);
+  });
+
+  it('decodes data URLs and bare base64', () => {
+    expect(decodeImageBase64('data:image/png;base64,AQID')).toEqual(new Uint8Array([1, 2, 3]));
+    expect(decodeImageBase64('AQID')).toEqual(new Uint8Array([1, 2, 3]));
+    expect(decodeImageBase64('data:image/png;base64,***')).toBeNull();
   });
 });

@@ -10,11 +10,14 @@ export interface HistoryEntry {
 export interface ClipHistoryOptions {
   readonly limit: number;
   readonly ttlMs: number;
+  /** Images are large (up to 10 MB); only the newest few are kept. */
+  readonly maxImages: number;
 }
 
 export const DEFAULT_HISTORY_OPTIONS: ClipHistoryOptions = {
   limit: 20,
   ttlMs: 7 * 24 * 60 * 60 * 1000,
+  maxImages: 3,
 };
 
 /** Recent clips, newest first, bounded by count and age (docs/PLAN.md §8.5). */
@@ -26,10 +29,12 @@ export class ClipHistory {
   /** Adds a clip; returns false if a clip with the same id is already stored. */
   add(clip: Clip): boolean {
     if (this.entries.some((entry) => entry.clip.id === clip.id)) return false;
+    let images = 0;
     this.entries = [...this.entries, { clip, deliveredTo: [] }]
       .sort((a, b) => compareClipRecency(b.clip, a.clip))
+      .filter((entry) => entry.clip.content.kind !== 'image' || ++images <= this.options.maxImages)
       .slice(0, this.options.limit);
-    return true;
+    return this.entries.some((entry) => entry.clip.id === clip.id);
   }
 
   markDelivered(clipId: ClipId, deviceId: DeviceId): boolean {
@@ -53,6 +58,11 @@ export class ClipHistory {
 
   list(): readonly HistoryEntry[] {
     return this.entries;
+  }
+
+  /** Clip by id, if still stored. */
+  get(clipId: ClipId): Clip | undefined {
+    return this.entries.find((entry) => entry.clip.id === clipId)?.clip;
   }
 
   /** Clips created strictly after `sinceMs`, oldest first, at most `max`. */

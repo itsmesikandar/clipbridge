@@ -1,11 +1,43 @@
 /**
- * UTF-8 encode/decode without TextEncoder/TextDecoder, which are not available
- * on every React Native engine. Lone surrogates are encoded as U+FFFD.
+ * UTF-8 encode/decode. Uses the platform's TextEncoder/TextDecoder when present
+ * (Node, browsers) and portable code otherwise (not every React Native engine
+ * has TextDecoder). Protocol frames are ASCII (JSON + base64), so the portable
+ * code has a fast path for ASCII. Lone surrogates are encoded as U+FFFD.
  */
 
 const REPLACEMENT = 0xfffd;
+const CHUNK = 8192;
+
+interface NativeTextEncoder {
+  encode(text: string): Uint8Array;
+}
+interface NativeTextDecoder {
+  decode(bytes: Uint8Array): string;
+}
+
+const nativeEncoder = createNative('TextEncoder', []) as NativeTextEncoder | null;
+const nativeDecoder = createNative('TextDecoder', ['utf-8']) as NativeTextDecoder | null;
+
+/** Instantiates a global class if the platform has it (types are not in the ES lib). */
+function createNative(name: string, args: unknown[]): unknown {
+  const Constructor = (globalThis as Record<string, unknown>)[name];
+  if (typeof Constructor !== 'function') return null;
+  try {
+    return new (Constructor as new (...a: unknown[]) => unknown)(...args);
+  } catch {
+    return null;
+  }
+}
 
 export function utf8Encode(text: string): Uint8Array {
+  if (nativeEncoder) return nativeEncoder.encode(text);
+  return utf8EncodePortable(text);
+}
+
+/** Portable encoder (exported for tests). */
+export function utf8EncodePortable(text: string): Uint8Array {
+  const ascii = asciiBytes(text);
+  if (ascii) return ascii;
   const out: number[] = [];
   for (let i = 0; i < text.length; i++) {
     let code = text.charCodeAt(i);
@@ -61,6 +93,19 @@ export function utf8Length(text: string): number {
 
 /** Decodes UTF-8; invalid sequences become U+FFFD. */
 export function utf8Decode(bytes: Uint8Array): string {
+  if (nativeDecoder) return nativeDecoder.decode(bytes);
+  return utf8DecodePortable(bytes);
+}
+
+/** Portable decoder (exported for tests). */
+export function utf8DecodePortable(bytes: Uint8Array): string {
+  if (isAscii(bytes)) {
+    let ascii = '';
+    for (let start = 0; start < bytes.length; start += CHUNK) {
+      ascii += String.fromCharCode(...bytes.subarray(start, start + CHUNK));
+    }
+    return ascii;
+  }
   const codes: number[] = [];
   let i = 0;
   while (i < bytes.length) {
@@ -106,7 +151,6 @@ export function utf8Decode(bytes: Uint8Array): string {
   }
 
   let out = '';
-  const CHUNK = 8192;
   for (let start = 0; start < codes.length; start += CHUNK) {
     out += String.fromCodePoint(...codes.slice(start, start + CHUNK));
   }
@@ -116,4 +160,20 @@ export function utf8Decode(bytes: Uint8Array): string {
 function isContinuation(bytes: Uint8Array, index: number): boolean {
   const byte = bytes[index];
   return byte !== undefined && (byte & 0xc0) === 0x80;
+}
+
+/** Bytes of an ASCII-only string, or null if it contains other characters. */
+function asciiBytes(text: string): Uint8Array | null {
+  const out = new Uint8Array(text.length);
+  for (let i = 0; i < text.length; i++) {
+    const code = text.charCodeAt(i);
+    if (code >= 0x80) return null;
+    out[i] = code;
+  }
+  return out;
+}
+
+function isAscii(bytes: Uint8Array): boolean {
+  for (const byte of bytes) if (byte >= 0x80) return false;
+  return true;
 }

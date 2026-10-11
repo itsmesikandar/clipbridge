@@ -202,6 +202,21 @@ export const wireMembershipSchema = z.object({
 
 export const MAX_HISTORY_CLIPS = 50;
 
+/** Images travel in chunks of this many raw bytes (docs/milestones/M6-images.md). */
+export const IMAGE_CHUNK_BYTES = 256 * 1024;
+export const MAX_IMAGE_CHUNKS = Math.ceil(CLIP_LIMITS.imageBytes / IMAGE_CHUNK_BYTES);
+
+/** Announces a chunked image: everything but the bytes, plus size, hash and chunk count. */
+export const imageHeaderSchema = z.object({
+  ...clipBase,
+  kind: z.literal('image'),
+  mime: z.enum(['image/png', 'image/jpeg']),
+  size: z.number().int().min(1).max(CLIP_LIMITS.imageBytes),
+  /** Content hash (see computeContentHash), checked after reassembly. */
+  hash: z.string().regex(/^[0-9a-f]{64}$/),
+  chunks: z.number().int().min(1).max(MAX_IMAGE_CHUNKS),
+});
+
 export const sealedKeySchema = z.object({
   deviceId,
   /** Ephemeral X25519 public key of the sealed box. */
@@ -213,8 +228,26 @@ export const sealedKeySchema = z.object({
 export const bodySchema = z.discriminatedUnion('t', [
   z.object({ t: z.literal('CLIP'), clip: wireClipSchema }),
   z.object({ t: z.literal('ACK'), clipId }),
+  z.object({ t: z.literal('CLIP_START'), clip: imageHeaderSchema }),
+  /** "I already have (or am receiving) this image, stop sending it." */
+  z.object({ t: z.literal('CLIP_SKIP'), clipId }),
+  z.object({
+    t: z.literal('CLIP_CHUNK'),
+    clipId,
+    index: z
+      .number()
+      .int()
+      .min(0)
+      .max(MAX_IMAGE_CHUNKS - 1),
+    data: base64(base64Chars(IMAGE_CHUNK_BYTES)).min(1),
+  }),
   z.object({ t: z.literal('HISTORY_REQ'), since: timestamp }),
-  z.object({ t: z.literal('HISTORY_RES'), clips: z.array(wireClipSchema).max(MAX_HISTORY_CLIPS) }),
+  z.object({
+    t: z.literal('HISTORY_RES'),
+    clips: z.array(wireClipSchema).max(MAX_HISTORY_CLIPS),
+    /** The newest image, sent separately in chunks; lets the receiver skip older text. */
+    newestImage: z.object({ createdAt: timestamp, origin: deviceId }).nullable(),
+  }),
   z.object({ t: z.literal('MEMBERSHIP'), membership: wireMembershipSchema }),
   z.object({
     t: z.literal('KEY_ROTATE'),
@@ -241,6 +274,7 @@ export type SealedKey = z.infer<typeof sealedKeySchema>;
 export type PairingProofPayload = z.infer<typeof pairingProofPayloadSchema>;
 export type PairingAcceptPayload = z.infer<typeof pairingAcceptPayloadSchema>;
 export type WireClip = z.infer<typeof wireClipSchema>;
+export type ImageHeader = z.infer<typeof imageHeaderSchema>;
 export type WireDevice = z.infer<typeof wireDeviceSchema>;
 export type WireMembership = z.infer<typeof wireMembershipSchema>;
 export type Body = z.infer<typeof bodySchema>;

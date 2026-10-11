@@ -66,7 +66,7 @@ describe('ClipHistory', () => {
   });
 
   it('keeps the newest clips first and drops beyond the limit', () => {
-    const history = new ClipHistory({ limit: 2, ttlMs: 1_000 });
+    const history = new ClipHistory({ limit: 2, ttlMs: 1_000, maxImages: 3 });
     history.add(clip(1));
     history.add(clip(3));
     history.add(clip(2));
@@ -76,14 +76,14 @@ describe('ClipHistory', () => {
   });
 
   it('returns clips since a time, oldest first', () => {
-    const history = new ClipHistory({ limit: 10, ttlMs: 1_000 });
+    const history = new ClipHistory({ limit: 10, ttlMs: 1_000, maxImages: 3 });
     [1, 2, 3, 4].forEach((n) => history.add(clip(n)));
     expect(history.clipsSince(2, 10).map((c) => c.createdAt)).toEqual([3, 4]);
     expect(history.clipsSince(0, 2).map((c) => c.createdAt)).toEqual([3, 4]);
   });
 
   it('expires entries after the TTL and tracks delivery', () => {
-    const history = new ClipHistory({ limit: 10, ttlMs: 100 });
+    const history = new ClipHistory({ limit: 10, ttlMs: 100, maxImages: 3 });
     history.add(clip(1, 0));
     history.add(clip(2, 150));
     expect(history.markDelivered('id-2' as ClipId, 'dev_b' as DeviceId)).toBe(true);

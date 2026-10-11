@@ -418,3 +418,12 @@ select {
     monospace;
   letter-spacing: 3px;
 }
+
+.thumb {
+  width: 48px;
+  height: 48px;
+  flex-shrink: 0;
+  object-fit: cover;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+}

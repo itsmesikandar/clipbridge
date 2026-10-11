@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { base64ToBytes, bytesToBase64 } from './base64';
 import { bytesToHex, concatBytes, constantTimeEqual, hexToBytes, lengthPrefixed } from './bytes';
 import { canonicalJson } from './canonical-json';
-import { utf8Decode, utf8Encode, utf8Length } from './utf8';
+import { utf8Decode, utf8DecodePortable, utf8Encode, utf8EncodePortable, utf8Length } from './utf8';
 
 const bytes = (...values: number[]): Uint8Array => Uint8Array.from(values);
 
@@ -43,6 +43,19 @@ describe('utf8', () => {
     expect(utf8Encode('é')).toEqual(bytes(0xc3, 0xa9));
     expect(utf8Encode('€')).toEqual(bytes(0xe2, 0x82, 0xac));
     expect(utf8Encode('🙂')).toEqual(bytes(0xf0, 0x9f, 0x99, 0x82));
+  });
+
+  it.each(['plain ascii {"t":"x"}', 'नमस्ते 🚀', ''])(
+    'portable code matches native for %j',
+    (text) => {
+      expect(utf8EncodePortable(text)).toEqual(utf8Encode(text));
+      expect(utf8DecodePortable(utf8Encode(text))).toBe(text);
+    },
+  );
+
+  it('portable decoder replaces invalid bytes', () => {
+    expect(utf8DecodePortable(bytes(0xff, 0x41))).toBe('\ufffdA');
+    expect(utf8EncodePortable('\ud800')).toEqual(bytes(0xef, 0xbf, 0xbd));
   });
 
   it('replaces lone surrogates and invalid bytes with U+FFFD', () => {

@@ -23,6 +23,8 @@ import * as Clipboard from 'expo-clipboard';
 import * as Crypto from 'expo-crypto';
 import * as SecureStore from 'expo-secure-store';
 
+import { writeImageToClipboard } from './image-tools';
+
 export class SystemClock implements ClockPort {
   now(): number {
     return Date.now();
@@ -51,9 +53,8 @@ export class ExpoClipboard implements ClipboardPort {
   async write(content: ClipContent): Promise<Result<void, AppError>> {
     try {
       if (content.kind === 'image') {
-        return err(
-          appError('CLIPBOARD_ACCESS_FAILED', 'images arrive in M6', { operation: 'write' }),
-        );
+        await writeImageToClipboard(content);
+        return ok(undefined);
       }
       await Clipboard.setStringAsync(content.kind === 'text' ? content.text : content.url);
       return ok(undefined);

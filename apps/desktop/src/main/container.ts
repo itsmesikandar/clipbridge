@@ -8,12 +8,13 @@ import { join } from 'node:path';
 
 import { AppController, CredentialStore } from '@clipbridge/app';
 import type { EnginePorts } from '@clipbridge/core';
-import { app, clipboard, Notification, safeStorage, shell } from 'electron';
+import { app, Notification, safeStorage, shell } from 'electron';
 import { toString as renderQrCode } from 'qrcode';
 
 import { BonjourDiscovery } from './adapters/bonjour-discovery';
 import { ElectronClipboard } from './adapters/electron-clipboard';
 import { DesktopNotifier, type NotificationContent } from './adapters/electron-notifier';
+import { electronSystemClipboard, makeThumbnail } from './adapters/electron-system-clipboard';
 import { FileLogger } from './adapters/file-logger';
 import { EncryptedFileStorage, JsonFileStorage } from './adapters/file-storage';
 import { NodeNetworkInfo } from './adapters/node-network-info';
@@ -70,7 +71,7 @@ export function createContainer(options: ContainerOptions): Container {
     transport: new WsTransport(),
     discovery,
     networkInfo,
-    clipboard: new ElectronClipboard(clipboard),
+    clipboard: new ElectronClipboard(electronSystemClipboard),
     notifier: new DesktopNotifier(showNotification),
   };
 
@@ -90,6 +91,7 @@ export function createContainer(options: ContainerOptions): Container {
     defaultDeviceName: options.profile ? `${baseName} (${options.profile})` : baseName,
     appVersion: app.getVersion(),
     logFile,
+    makeThumbnail: (image) => makeThumbnail(image.data),
     renderQr: (text) => renderQrCode(text, { type: 'svg', margin: 1, errorCorrectionLevel: 'M' }),
     requestAttention: (message) => {
       options.showWindow();

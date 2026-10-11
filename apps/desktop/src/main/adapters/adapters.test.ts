@@ -6,7 +6,13 @@ import type { Clip, ClipboardChange, DeviceId, DeviceRecord } from '@clipbridge/
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { toDiscoveredService } from './bonjour-discovery';
-import { ElectronClipboard, rawFormat, type SystemClipboard } from './electron-clipboard';
+import {
+  ElectronClipboard,
+  IMAGE_POLL_EVERY,
+  IMAGE_POLL_MAX_EVERY,
+  rawFormat,
+  type SystemClipboard,
+} from './electron-clipboard';
 import { describeReceivedClip } from './electron-notifier';
 import { EncryptedFileStorage, JsonFileStorage, type SecretCipher } from './file-storage';
 import { NodeNetworkInfo, pickLanSnapshot } from './node-network-info';
@@ -68,8 +74,20 @@ describe('NodeNetworkInfo', () => {
 
 class FakeSystemClipboard implements SystemClipboard {
   text = '';
+  image: Uint8Array | null = null;
+  /** Simulates the OS re-encoding images it is given. */
+  reencode = false;
   formats = new Set<string>();
   failReads = false;
+
+  readImagePng(): Promise<Uint8Array | null> {
+    return Promise.resolve(this.image);
+  }
+  writeImage(_mime: 'image/png' | 'image/jpeg', data: Uint8Array): Promise<void> {
+    this.text = '';
+    this.image = this.reencode ? Uint8Array.from([...data, 0]) : data;
+    return Promise.resolve();
+  }
 
   readText(): Promise<string> {
     return this.failReads ? Promise.reject(new Error('locked')) : Promise.resolve(this.text);
@@ -133,17 +151,65 @@ describe('ElectronClipboard', () => {
     unsubscribe();
   });
 
-  it('survives a locked clipboard and refuses images for now', async () => {
+  it('survives a locked clipboard', async () => {
     const { system, clipboard, changes, unsubscribe } = await watched();
     system.failReads = true;
     await clipboard.poll();
     expect(changes).toEqual([]);
-    const image = await clipboard.write({
+    unsubscribe();
+  });
+
+  const pollTimes = async (clipboard: ElectronClipboard, times: number): Promise<void> => {
+    for (let i = 0; i < times; i++) await clipboard.poll();
+  };
+
+  it('reports a copied image (screenshot) when there is no text', async () => {
+    const { system, clipboard, changes, unsubscribe } = await watched('');
+    system.image = new Uint8Array([1, 2, 3]);
+    await pollTimes(clipboard, IMAGE_POLL_EVERY);
+    expect(changes.map((change) => change.content)).toEqual([
+      { kind: 'image', mime: 'image/png', data: new Uint8Array([1, 2, 3]) },
+    ]);
+    await pollTimes(clipboard, IMAGE_POLL_EVERY); // same image: not again
+    expect(changes).toHaveLength(1);
+    unsubscribe();
+  });
+
+  it('checks an unchanged image less and less often', async () => {
+    const { system, clipboard, unsubscribe } = await watched('');
+    system.image = new Uint8Array([7]);
+    let reads = 0;
+    const read = system.readImagePng.bind(system);
+    system.readImagePng = () => {
+      reads += 1;
+      return read();
+    };
+    await pollTimes(clipboard, IMAGE_POLL_MAX_EVERY * 4);
+    // 5 + 10 + 20 + 20 + 20 polls → 5 reads instead of 16 at a fixed 2.5 s.
+    expect(reads).toBeLessThanOrEqual(6);
+    unsubscribe();
+  });
+
+  it('prefers text when the clipboard has both', async () => {
+    const { system, clipboard, changes, unsubscribe } = await watched('');
+    system.image = new Uint8Array([9]);
+    system.text = 'caption';
+    await pollTimes(clipboard, IMAGE_POLL_EVERY);
+    expect(changes.map((change) => change.content.kind)).toEqual(['text']);
+    unsubscribe();
+  });
+
+  it('does not send back an image it wrote, even if the OS re-encodes it', async () => {
+    const { system, clipboard, changes, unsubscribe } = await watched('');
+    system.reencode = true;
+    const written = await clipboard.write({
       kind: 'image',
-      mime: 'image/png',
-      data: new Uint8Array(1),
+      mime: 'image/jpeg',
+      data: new Uint8Array([5, 6]),
     });
-    expect(!image.ok && image.error.code).toBe('CLIPBOARD_ACCESS_FAILED');
+    expect(written.ok).toBe(true);
+    await pollTimes(clipboard, IMAGE_POLL_EVERY * 2);
+    expect(changes).toEqual([]);
     unsubscribe();
   });
 });

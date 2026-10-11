@@ -84,6 +84,7 @@ function world() {
       appVersion: '0.1.0',
       logFile: 'main.log',
       renderQr: (text) => Promise.resolve(`<svg data-link="${text}"/>`),
+      makeThumbnail: (image) => Promise.resolve(`data:${image.mime};thumb,${image.data.length}`),
       requestAttention: (message) => attention.push(message),
     });
     return { controller, clipboard, storage, secure, node, attention };
@@ -340,6 +341,27 @@ describe('AppController devices', () => {
 });
 
 describe('AppController basics', () => {
+  it('shows images with their size and a thumbnail', async () => {
+    const { clock, computer } = world();
+    const laptop = computer('Laptop');
+    const desktop = computer('Desktop');
+    await laptop.controller.init();
+    await desktop.controller.init();
+    await pair(laptop, desktop, clock);
+    laptop.clipboard.userCopies({
+      kind: 'image',
+      mime: 'image/png',
+      data: new Uint8Array(1_500_000),
+    });
+    await clock.advance(500);
+    const [item] = desktop.controller.snapshot.get().history;
+    expect(item).toMatchObject({
+      kind: 'image',
+      preview: 'Image · 1.4 MB',
+      thumbnail: 'data:image/png;thumb,1500000',
+    });
+  });
+
   it('starts only one engine when init() is called again', async () => {
     const { clock, computer } = world();
     const laptop = computer('Laptop');

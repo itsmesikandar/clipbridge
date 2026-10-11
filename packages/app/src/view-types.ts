@@ -17,6 +17,8 @@ export interface HistoryItemView {
   readonly kind: ClipKind;
   /** Short, single-line preview; full content stays in the main process. */
   readonly preview: string;
+  /** Small image preview (data URL) for image clips, once it is ready. */
+  readonly thumbnail: string | null;
   readonly fromName: string;
   readonly fromThisDevice: boolean;
   readonly createdAt: number;

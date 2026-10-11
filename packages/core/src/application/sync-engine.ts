@@ -20,13 +20,21 @@ import type { DeviceRecord } from '../domain/device';
 import { type AppError, appError } from '../domain/errors';
 import { type ClipId, createClipId, type DeviceId } from '../domain/ids';
 import { err, ok, type Result } from '../domain/result';
+import { base64ToBytes, bytesToBase64 } from '../lib/base64';
+import { concatBytes } from '../lib/bytes';
 import type { ClipboardChange, ClipboardPort } from '../ports/clipboard';
-import type { ClockPort } from '../ports/clock';
+import type { Cancel, ClockPort } from '../ports/clock';
 import type { LoggerPort } from '../ports/logger';
 import type { NotifierPort } from '../ports/notifier';
 import type { RandomPort } from '../ports/random';
 import type { Unsubscribe } from '../ports/transport';
-import { type Body, MAX_HISTORY_CLIPS, type WireClip } from '../protocol/frames';
+import {
+  type Body,
+  IMAGE_CHUNK_BYTES,
+  type ImageHeader,
+  MAX_HISTORY_CLIPS,
+  type WireClip,
+} from '../protocol/frames';
 import { clipFromWire, clipToWire } from '../protocol/wire';
 import { BoundedSet } from './bounded-set';
 import {
@@ -65,6 +73,27 @@ export interface SyncEngineOptions {
 }
 
 const SEEN_CAPACITY = 500;
+/** A chunked image must complete within this time. */
+const ASSEMBLY_TIMEOUT_MS = 30_000;
+const MAX_ASSEMBLIES_PER_PEER = 2;
+/** Chunks are sent a few at a time so heartbeats and CLIP_SKIP get through. */
+const CHUNKS_PER_TICK = 4;
+const PUMP_INTERVAL_MS = 5;
+
+interface OutgoingImage {
+  readonly clip: Clip;
+  readonly data: Uint8Array;
+  readonly chunks: number;
+  next: number;
+}
+
+interface ImageAssembly {
+  readonly source: PeerSession;
+  readonly header: ImageHeader;
+  readonly parts: (Uint8Array | undefined)[];
+  received: number;
+  readonly cancelTimeout: Cancel;
+}
 /** Same content copied twice within this window counts as one copy. */
 const DUPLICATE_COPY_WINDOW_MS = 2_000;
 
@@ -78,6 +107,13 @@ export class SyncEngine {
   private readonly sessions = new Map<
     DeviceId,
     { session: PeerSession; unsubscribe: Unsubscribe }
+  >();
+  /** Images being received, by clip id (one source per image). */
+  private readonly assemblies = new Map<ClipId, ImageAssembly>();
+  /** Images being sent, per session. */
+  private readonly outgoing = new Map<
+    PeerSession,
+    { queue: OutgoingImage[]; cancel: Cancel | null }
   >();
   /** Most recent clip that this device copied or applied. */
   private latest: Recency | null = null;
@@ -110,6 +146,8 @@ export class SyncEngine {
   stop(): void {
     this.stopWatching?.();
     this.stopWatching = null;
+    for (const key of [...this.assemblies.keys()]) this.abortAssembly(key, null);
+    for (const session of [...this.outgoing.keys()]) this.dropOutgoing(session);
     for (const { unsubscribe } of this.sessions.values()) unsubscribe();
     this.sessions.clear();
   }
@@ -121,6 +159,10 @@ export class SyncEngine {
       this.handleBody(session, body);
     });
     const unsubscribeClose = session.onClose(() => {
+      this.dropOutgoing(session);
+      for (const [clipId, assembly] of this.assemblies) {
+        if (assembly.source === session) this.abortAssembly(clipId, null);
+      }
       const current = this.sessions.get(session.peer.id);
       if (current?.session === session) this.sessions.delete(session.peer.id);
     });
@@ -190,7 +232,7 @@ export class SyncEngine {
     this.latest = clip;
     this.storeInHistory(clip);
     this.lastErrorStore.set(null);
-    this.broadcast({ t: 'CLIP', clip: clipToWire(clip) }, null);
+    this.broadcastClip(clip, null);
     return ok(clip);
   }
 
@@ -199,24 +241,51 @@ export class SyncEngine {
   private handleBody(session: PeerSession, body: Body): void {
     switch (body.t) {
       case 'CLIP': {
-        const clip = this.ingest(session, body.clip);
+        const clip = this.ingestWire(session, body.clip);
         session.send({ t: 'ACK', clipId: body.clip.id });
         if (clip) this.deliver(clip);
         return;
       }
+      case 'CLIP_START':
+        this.startAssembly(session, body.clip);
+        return;
+      case 'CLIP_CHUNK':
+        this.addChunk(session, body.clipId as ClipId, body.index, body.data);
+        return;
+      case 'CLIP_SKIP':
+        this.skipOutgoing(session, body.clipId as ClipId);
+        return;
       case 'HISTORY_REQ': {
-        const clips = this.history.clipsSince(body.since, MAX_HISTORY_CLIPS).map(clipToWire);
-        session.send({ t: 'HISTORY_RES', clips });
+        // Text and links in one message; images are big, so only the newest one, in chunks.
+        const clips = this.history.clipsSince(body.since, MAX_HISTORY_CLIPS);
+        const newestImage = [...clips].reverse().find((clip) => clip.content.kind === 'image');
+        session.send({
+          t: 'HISTORY_RES',
+          clips: clips.filter((clip) => clip.content.kind !== 'image').map(clipToWire),
+          newestImage: newestImage
+            ? { createdAt: newestImage.createdAt, origin: newestImage.origin }
+            : null,
+        });
+        if (newestImage) this.sendClipTo(session, newestImage);
         return;
       }
       case 'HISTORY_RES': {
         let newest: Clip | null = null;
         for (const wire of body.clips) {
-          const clip = this.ingest(session, wire);
+          const clip = this.ingestWire(session, wire);
           if (clip && (!newest || compareClipRecency(clip, newest) > 0)) newest = clip;
         }
         // Catching up must not replay every missed clip at the user; apply only the newest.
-        if (newest) this.deliver(newest);
+        // If a newer image is on its way, it will be delivered when it arrives.
+        const image = body.newestImage;
+        const imageIsNewer =
+          image !== null &&
+          newest !== null &&
+          compareClipRecency(
+            { createdAt: image.createdAt, origin: image.origin as DeviceId },
+            newest,
+          ) > 0;
+        if (newest && !imageIsNewer) this.deliver(newest);
         return;
       }
       case 'ACK':
@@ -232,13 +301,8 @@ export class SyncEngine {
     }
   }
 
-  /** Validates, deduplicates, stores and forwards a clip. Returns it if it was new. */
-  private ingest(source: PeerSession, wire: WireClip): Clip | null {
+  private ingestWire(source: PeerSession, wire: WireClip): Clip | null {
     if (this.seen.has(wire.id as ClipId)) return null;
-    if (!this.options.findMember(wire.origin as DeviceId)) {
-      this.deps.logger.warn('dropping clip from unknown origin', { peerId: source.peer.id });
-      return null;
-    }
     const parsed = clipFromWire(wire);
     if (!parsed.ok) {
       this.deps.logger.warn('dropping invalid clip', {
@@ -247,12 +311,148 @@ export class SyncEngine {
       });
       return null;
     }
-    const clip = parsed.value;
+    return this.ingest(source, parsed.value);
+  }
+
+  /** Deduplicates, stores and forwards a validated clip. Returns it if it was new. */
+  private ingest(source: PeerSession, clip: Clip): Clip | null {
+    if (this.seen.has(clip.id)) return null;
+    if (!this.options.findMember(clip.origin)) {
+      this.deps.logger.warn('dropping clip from unknown origin', { peerId: source.peer.id });
+      return null;
+    }
     this.seen.add(clip.id);
     this.storeInHistory(clip);
-    this.broadcast({ t: 'CLIP', clip: wire }, source.peer.id, clip.origin);
+    this.broadcastClip(clip, source.peer.id, clip.origin);
     return clip;
   }
+
+  // ------------------------------------------------------------------ chunked images
+
+  private startAssembly(source: PeerSession, header: ImageHeader): void {
+    const clipId = header.id as ClipId;
+    // Already have it, or another peer is sending it: ask this one to stop.
+    if (this.seen.has(clipId) || this.assemblies.has(clipId)) {
+      source.send({ t: 'CLIP_SKIP', clipId });
+      return;
+    }
+    const inFlight = [...this.assemblies.values()].filter((a) => a.source === source).length;
+    if (inFlight >= MAX_ASSEMBLIES_PER_PEER) {
+      this.deps.logger.warn('too many images in flight', { peerId: source.peer.id });
+      source.send({ t: 'CLIP_SKIP', clipId });
+      return;
+    }
+    const cancelTimeout = this.deps.clock.schedule(ASSEMBLY_TIMEOUT_MS, () => {
+      this.assemblies.delete(clipId);
+      this.deps.logger.warn('image transfer timed out', { peerId: source.peer.id });
+    });
+    this.assemblies.set(clipId, {
+      source,
+      header,
+      parts: new Array<Uint8Array | undefined>(header.chunks),
+      received: 0,
+      cancelTimeout,
+    });
+  }
+
+  private addChunk(source: PeerSession, clipId: ClipId, index: number, data: string): void {
+    const assembly = this.assemblies.get(clipId);
+    if (assembly?.source !== source || index >= assembly.header.chunks || assembly.parts[index]) {
+      return;
+    }
+    const bytes = base64ToBytes(data);
+    if (!bytes || bytes.length > IMAGE_CHUNK_BYTES) {
+      this.abortAssembly(clipId, 'invalid chunk');
+      return;
+    }
+    assembly.parts[index] = bytes;
+    assembly.received += 1;
+    if (assembly.received < assembly.header.chunks) return;
+
+    this.abortAssembly(clipId, null);
+    const { header } = assembly;
+    const image = concatBytes(
+      ...assembly.parts.filter((part): part is Uint8Array => part !== undefined),
+    );
+    const content: ClipContent = { kind: 'image', mime: header.mime, data: image };
+    const hash = computeContentHash(content);
+    if (image.length !== header.size || hash !== header.hash) {
+      this.deps.logger.warn('image failed integrity check', { peerId: source.peer.id });
+      return;
+    }
+    const clip: Clip = {
+      id: clipId,
+      origin: header.origin as DeviceId,
+      createdAt: header.createdAt,
+      content,
+      hash,
+    };
+    const fresh = this.ingest(source, clip);
+    source.send({ t: 'ACK', clipId });
+    if (fresh) this.deliver(fresh);
+  }
+
+  private abortAssembly(clipId: ClipId, reason: string | null): void {
+    const assembly = this.assemblies.get(clipId);
+    if (!assembly) return;
+    assembly.cancelTimeout();
+    this.assemblies.delete(clipId);
+    if (reason) this.deps.logger.warn('image transfer aborted', { reason });
+  }
+
+  /** Queues an image for a session and starts the chunk pump. */
+  private queueImage(session: PeerSession, clip: Clip, data: Uint8Array): void {
+    const chunks = Math.max(1, Math.ceil(data.length / IMAGE_CHUNK_BYTES));
+    const state = this.outgoing.get(session) ?? { queue: [], cancel: null };
+    state.queue.push({ clip, data, chunks, next: 0 });
+    this.outgoing.set(session, state);
+    state.cancel ??= this.deps.clock.schedule(PUMP_INTERVAL_MS, () => {
+      this.pump(session);
+    });
+  }
+
+  private pump(session: PeerSession): void {
+    const state = this.outgoing.get(session);
+    if (!state) return;
+    state.cancel = null;
+    let budget = CHUNKS_PER_TICK;
+    while (budget > 0 && state.queue.length > 0 && !session.isClosed) {
+      const item = state.queue[0];
+      if (!item) break;
+      const start = item.next * IMAGE_CHUNK_BYTES;
+      const slice = item.data.subarray(start, start + IMAGE_CHUNK_BYTES);
+      session.send({
+        t: 'CLIP_CHUNK',
+        clipId: item.clip.id,
+        index: item.next,
+        data: bytesToBase64(slice),
+      });
+      item.next += 1;
+      budget -= 1;
+      if (item.next >= item.chunks) state.queue.shift();
+    }
+    if (state.queue.length === 0 || session.isClosed) {
+      this.outgoing.delete(session);
+      return;
+    }
+    state.cancel = this.deps.clock.schedule(PUMP_INTERVAL_MS, () => {
+      this.pump(session);
+    });
+  }
+
+  private skipOutgoing(session: PeerSession, clipId: ClipId): void {
+    const state = this.outgoing.get(session);
+    if (!state) return;
+    const remaining = state.queue.filter((item) => item.clip.id !== clipId);
+    state.queue.splice(0, state.queue.length, ...remaining);
+  }
+
+  private dropOutgoing(session: PeerSession): void {
+    this.outgoing.get(session)?.cancel?.();
+    this.outgoing.delete(session);
+  }
+
+  // ------------------------------------------------------------------ delivery
 
   private deliver(clip: Clip): void {
     const settings = this.options.settings();
@@ -272,11 +472,34 @@ export class SyncEngine {
     }
   }
 
-  private broadcast(body: Body, exceptPeer: DeviceId | null, exceptOrigin?: DeviceId): void {
+  private broadcastClip(clip: Clip, exceptPeer: DeviceId | null, exceptOrigin?: DeviceId): void {
     for (const [peerId, { session }] of this.sessions) {
       if (peerId === exceptPeer || peerId === exceptOrigin || session.isClosed) continue;
-      session.send(body);
+      this.sendClipTo(session, clip);
     }
+  }
+
+  /** Text and links in one CLIP message; images as CLIP_START, then paced CLIP_CHUNKs. */
+  private sendClipTo(session: PeerSession, clip: Clip): void {
+    const { content } = clip;
+    if (content.kind !== 'image') {
+      session.send({ t: 'CLIP', clip: clipToWire(clip) });
+      return;
+    }
+    session.send({
+      t: 'CLIP_START',
+      clip: {
+        id: clip.id,
+        origin: clip.origin,
+        createdAt: clip.createdAt,
+        kind: 'image',
+        mime: content.mime,
+        size: content.data.length,
+        hash: clip.hash,
+        chunks: Math.max(1, Math.ceil(content.data.length / IMAGE_CHUNK_BYTES)),
+      },
+    });
+    this.queueImage(session, clip, content.data);
   }
 
   private storeInHistory(clip: Clip): void {

@@ -8,8 +8,9 @@ import {
 import { classifyText } from '@clipbridge/core';
 import { Link } from 'expo-router';
 import { type ReactElement, useState } from 'react';
-import { Linking, Platform, ScrollView, View } from 'react-native';
+import { Image, type ImageStyle, Linking, Platform, ScrollView, View } from 'react-native';
 
+import { imageFromClipboard } from '@/adapters/image-tools';
 import { readClipboardText } from '@/adapters/platform-adapters';
 import { Banner, Button, Card, Dot, Label, styles, usePalette } from '@/components/ui';
 import { useShareOutcome } from '@/features/system/system-effects';
@@ -27,13 +28,17 @@ export function HomeView({ snapshot }: { readonly snapshot: AppSnapshot }): Reac
   const computers = sortDevices(snapshot.devices.filter((device) => device.role === 'hub'));
 
   const sendClipboard = (): void => {
-    void readClipboardText().then((text) => {
-      if (text.trim() === '') {
+    void (async () => {
+      const text = await readClipboardText();
+      const content = text.trim() !== '' ? classifyText(text) : await imageFromClipboard();
+      if (!content) {
         setFeedback('The clipboard is empty.');
         return;
       }
-      const sent = controller.sendClip(classifyText(text));
+      const sent = controller.sendClip(content);
       setFeedback(sent.ok ? 'Sent.' : sent.message);
+    })().catch(() => {
+      setFeedback('Could not read the clipboard.');
     });
   };
 
@@ -86,6 +91,13 @@ export function HomeView({ snapshot }: { readonly snapshot: AppSnapshot }): Reac
         ) : (
           snapshot.history.map((item) => (
             <View key={item.id} style={styles.row}>
+              {item.thumbnail && (
+                <Image
+                  source={{ uri: item.thumbnail }}
+                  style={thumbnailStyle}
+                  accessibilityLabel="Image"
+                />
+              )}
               <View style={styles.flex}>
                 <Label>{item.preview}</Label>
                 <Label muted small>
@@ -139,3 +151,5 @@ export function HomeView({ snapshot }: { readonly snapshot: AppSnapshot }): Reac
     </ScrollView>
   );
 }
+
+const thumbnailStyle: ImageStyle = { width: 48, height: 48, borderRadius: 6 };

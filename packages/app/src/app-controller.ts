@@ -81,6 +81,13 @@ export interface AppControllerDeps {
   readonly logFile: string;
   /** Renders a QR code (SVG markup) for the pairing link. */
   readonly renderQr: (text: string) => Promise<string>;
+  /**
+   * Small preview (data URL) of a received or copied image for the history list.
+   * Optional; without it images show as "Image · 1.2 MB".
+   */
+  readonly makeThumbnail?: (
+    image: Extract<ClipContent, { kind: 'image' }>,
+  ) => Promise<string | null>;
   /** Asks the user to look at the app (a device wants to join). */
   readonly requestAttention?: (message: string) => void;
   readonly createEngine?: typeof createCoreEngine;
@@ -119,6 +126,8 @@ export class AppController {
   private joinView: JoiningView = idleJoin;
   private readonly store: SimpleStore<AppSnapshot>;
   private initialized: Promise<void> | null = null;
+  /** Thumbnails by clip id; null while one is being made or when none could be made. */
+  private readonly thumbnails = new Map<string, string | null>();
   private applyToClipboardOverride = false;
 
   constructor(private readonly deps: AppControllerDeps) {
@@ -576,11 +585,29 @@ export class AppController {
       id: clip.id,
       kind: clip.content.kind,
       preview: previewOf(clip),
+      thumbnail: this.thumbnailFor(clip),
       fromName: clip.origin === selfId ? 'This device' : (sender?.name ?? 'Unknown device'),
       fromThisDevice: clip.origin === selfId,
       createdAt: clip.createdAt,
       deliveredCount: entry.deliveredTo.length,
     };
+  }
+
+  /** Returns a cached thumbnail, starting to make one the first time an image is seen. */
+  private thumbnailFor(clip: Clip): string | null {
+    const { content } = clip;
+    if (content.kind !== 'image' || !this.deps.makeThumbnail) return null;
+    if (this.thumbnails.has(clip.id)) return this.thumbnails.get(clip.id) ?? null;
+    this.thumbnails.set(clip.id, null);
+    void this.deps
+      .makeThumbnail(content)
+      .catch(() => null)
+      .then((thumbnail) => {
+        if (!thumbnail) return;
+        this.thumbnails.set(clip.id, thumbnail);
+        this.publish();
+      });
+    return null;
   }
 
   private requireSelf(): LocalDevice {
@@ -601,6 +628,11 @@ function previewOf(clip: Clip): string {
     case 'text':
       return clip.content.text.replace(/\s+/g, ' ').trim().slice(0, PREVIEW_LENGTH);
     case 'image':
-      return 'Image';
+      return `Image · ${formatSize(clip.content.data.length)}`;
   }
+}
+
+function formatSize(bytes: number): string {
+  if (bytes < 1024 * 1024) return `${Math.max(1, Math.round(bytes / 1024))} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }

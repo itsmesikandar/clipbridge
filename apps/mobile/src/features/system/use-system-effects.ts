@@ -6,7 +6,7 @@
 
 import { type AppSnapshot, createSimpleStore } from '@clipbridge/app';
 import { toBannerModel } from '@clipbridge/app/presentation';
-import { classifyText } from '@clipbridge/core';
+import { classifyText, type ClipContent } from '@clipbridge/core';
 import * as Notifications from 'expo-notifications';
 import { useShareIntentContext } from 'expo-share-intent';
 import { useEffect, useRef } from 'react';
@@ -14,6 +14,7 @@ import { AppState, Linking, Platform } from 'react-native';
 
 import { SyncService } from '../../../modules/sync-service';
 import { ACTION_COPY, ACTION_OPEN, setUpNotifications } from '../../adapters/expo-notifier';
+import { imageFromSharedFile } from '../../adapters/image-tools';
 import type { MobileContainer } from '../../container';
 import { useAppSnapshot, useContainer, useStore } from '../../state/app-context';
 
@@ -125,12 +126,26 @@ function useIncomingShares(container: MobileContainer): ShareOutcome | null {
 
   useEffect(() => {
     if (!hasShareIntent) return;
+    const file = shareIntent.files?.[0] ?? null;
     const raw = (shareIntent.webUrl ?? shareIntent.text ?? '').trim();
-    const key = `${raw}|${shareIntent.meta?.title ?? ''}`;
+    const key = `${raw}|${file?.path ?? ''}|${shareIntent.meta?.title ?? ''}`;
     if (handled.current === key) return;
     handled.current = key;
     resetShareIntent();
-    shareOutcomeStore.set(sendShared(container, raw));
+    if (file) {
+      shareOutcomeStore.set({ ok: true, message: 'Preparing the image…' });
+      void imageFromSharedFile(file.path, file.mimeType)
+        .catch(() => null)
+        .then((image) => {
+          shareOutcomeStore.set(
+            image
+              ? sendShared(container, image)
+              : { ok: false, message: 'This image could not be read or is larger than 10 MB.' },
+          );
+        });
+      return;
+    }
+    shareOutcomeStore.set(sendShared(container, raw === '' ? null : classifyText(raw)));
   }, [hasShareIntent, shareIntent, resetShareIntent, container]);
 
   return useStore(shareOutcomeStore);
@@ -138,10 +153,10 @@ function useIncomingShares(container: MobileContainer): ShareOutcome | null {
 
 export function sendShared(
   container: Pick<MobileContainer, 'controller'>,
-  raw: string,
+  content: ClipContent | null,
 ): ShareOutcome {
-  if (raw === '') return { ok: false, message: 'Only text and links can be sent for now.' };
-  const sent = container.controller.sendClip(classifyText(raw));
+  if (!content) return { ok: false, message: 'Only text, links and images can be sent.' };
+  const sent = container.controller.sendClip(content);
   if (!sent.ok) return { ok: false, message: sent.message };
   const connected = container.controller.snapshot.get().status.connectedCount;
   return {

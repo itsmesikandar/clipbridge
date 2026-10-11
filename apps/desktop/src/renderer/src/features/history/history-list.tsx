@@ -40,7 +40,11 @@ export function HistoryList({ items, now, api }: HistoryListProps): ReactElement
         <ul className="list">
           {items.map((item) => (
             <li key={item.id} className="list__item">
-              <span className="tag">{KIND_LABELS[item.kind]}</span>
+              {item.thumbnail ? (
+                <img className="thumb" src={item.thumbnail} alt="" />
+              ) : (
+                <span className="tag">{KIND_LABELS[item.kind]}</span>
+              )}
               <div className="list__body">
                 <span className="list__title list__title--clip" title={item.preview}>
                   {item.preview}
