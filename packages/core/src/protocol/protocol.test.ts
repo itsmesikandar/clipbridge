@@ -16,7 +16,13 @@ import {
 } from './handshake';
 import { SecureChannel } from './secure-channel';
 import { MAX_FRAME_CHARS, PROTOCOL_VERSION } from './version';
-import { clipFromWire, clipToWire, membershipFromWire, membershipToWire } from './wire';
+import {
+  clipFromWire,
+  clipToWire,
+  membershipFromWire,
+  membershipToWire,
+  parseMembership,
+} from './wire';
 
 const random = new SeededRandom(3);
 const group = createTestGroup(
@@ -124,6 +130,12 @@ describe('wire conversion', () => {
 
   it('round-trips membership', () => {
     expect(membershipFromWire(membershipToWire(group.membership))).toEqual(group.membership);
+  });
+
+  it('parses stored membership and rejects garbage', () => {
+    const stored: unknown = JSON.parse(JSON.stringify(group.membership));
+    expect(parseMembership(stored)).toEqual({ ok: true, value: group.membership });
+    expect(parseMembership({ version: 'x' }).ok).toBe(false);
   });
 });
 

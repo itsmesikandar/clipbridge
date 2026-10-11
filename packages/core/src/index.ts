@@ -85,3 +85,4 @@ export type * from './ports';
 
 // Protocol
 export { PROTOCOL_VERSION } from './protocol/version';
+export { parseMembership } from './protocol/wire';

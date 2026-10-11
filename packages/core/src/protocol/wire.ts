@@ -8,7 +8,12 @@ import type { ClipId, DeviceId } from '../domain/ids';
 import type { Membership } from '../domain/membership';
 import { err, ok, type Result } from '../domain/result';
 import { base64ToBytes, bytesToBase64 } from '../lib/base64';
-import type { WireClip, WireDevice, WireMembership } from './frames';
+import {
+  type WireClip,
+  type WireDevice,
+  type WireMembership,
+  wireMembershipSchema,
+} from './frames';
 
 export function clipToWire(clip: Clip): WireClip {
   const base = { id: clip.id, origin: clip.origin, createdAt: clip.createdAt };
@@ -73,4 +78,13 @@ export function membershipFromWire(wire: WireMembership): Membership {
     updatedBy: wire.updatedBy as DeviceId,
     members: wire.members.map(deviceFromWire),
   };
+}
+
+/** Validates an untrusted value (e.g. read from disk) as a member list. Signatures are not checked. */
+export function parseMembership(value: unknown): Result<Membership, AppError<'PROTOCOL_ERROR'>> {
+  const parsed = wireMembershipSchema.safeParse(value);
+  if (!parsed.success) {
+    return err(appError('PROTOCOL_ERROR', 'invalid member list', { reason: 'membership schema' }));
+  }
+  return ok(membershipFromWire(parsed.data));
 }

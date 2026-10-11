@@ -84,6 +84,11 @@ export class PeerManager {
     return this.peersStore;
   }
 
+  /** Port this hub accepts connections on; null for clients or when not running. */
+  get listeningPort(): number | null {
+    return this.listener?.port ?? null;
+  }
+
   /** Called for every new authenticated session (dialed or accepted). */
   onSessionOpened(listener: (session: PeerSession) => void): Unsubscribe {
     this.openedListeners.add(listener);

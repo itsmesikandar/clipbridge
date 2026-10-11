@@ -72,6 +72,8 @@ export interface Engine {
   readonly settings: ReadonlyStore<EngineSettings>;
   /** Last problem sending a clip (e.g. PAYLOAD_TOO_LARGE). */
   readonly lastSendError: ReadonlyStore<AppError | null>;
+  /** Port accepting connections (hubs), for diagnostics; null otherwise. */
+  readonly listeningPort: number | null;
   start(): Promise<Result<void, AppError>>;
   stop(): Promise<void>;
   /** Sends content the user chose explicitly (phones: share sheet). */
@@ -171,6 +173,10 @@ class ClipBridgeEngine implements Engine {
 
   get lastSendError(): ReadonlyStore<AppError | null> {
     return this.sync.lastError;
+  }
+
+  get listeningPort(): number | null {
+    return this.peerManager.listeningPort;
   }
 
   async start(): Promise<Result<void, AppError>> {
