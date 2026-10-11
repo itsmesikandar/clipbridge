@@ -34,6 +34,11 @@ export const DEFAULT_LISTEN_PORT = 47821;
 export const DIAL_TIMEOUT_MS = 5_000;
 /** An incoming connection must say what it wants (HELLO or PAIR_HELLO) within this time. */
 const FIRST_FRAME_TIMEOUT_MS = 10_000;
+/** At most this many incoming connections at once (docs/milestones/M7). */
+export const MAX_INBOUND_CONNECTIONS = 32;
+/** A host that fails this many handshakes within the window is refused for a while. */
+export const MAX_FAILED_HANDSHAKES = 5;
+const FAILED_HANDSHAKE_WINDOW_MS = 60_000;
 
 export interface PeerManagerDeps {
   readonly clock: ClockPort;
@@ -49,6 +54,10 @@ export interface PeerManagerOptions {
   readonly session: SessionContext;
   readonly groupTag: () => string;
   readonly listenPort: number;
+  /** Addresses that worked before (e.g. saved by the app); tried when mDNS finds nothing. */
+  readonly knownAddresses?: Readonly<Record<string, PeerAddress>>;
+  /** Called when dialing an address succeeded, so the app can remember it. */
+  readonly onAddressLearned?: (deviceId: DeviceId, address: PeerAddress) => void;
 }
 
 interface PeerRecord {
@@ -76,6 +85,8 @@ export class PeerManager {
   private running = false;
   private currentSubnet: string | null = null;
   private pairingHandler: ((connection: TransportConnection) => void) | null = null;
+  private inbound = 0;
+  private readonly failedHandshakes = new Map<string, number[]>();
 
   constructor(
     private readonly options: PeerManagerOptions,
@@ -166,7 +177,9 @@ export class PeerManager {
       if (existing) {
         existing.member = member;
       } else {
-        this.records.set(member.id, createRecord(member));
+        const record = createRecord(member);
+        record.lastKnownAddress = this.options.knownAddresses?.[member.id] ?? null;
+        this.records.set(member.id, record);
       }
     }
     for (const [id, record] of this.records) {
@@ -213,6 +226,43 @@ export class PeerManager {
     for (const record of this.records.values()) {
       record.session?.close(reason);
     }
+  }
+
+  /**
+   * Connects to a paired device by address, for networks where mDNS is blocked.
+   * The device is identified by the handshake, so any address can be tried.
+   */
+  async connectTo(address: PeerAddress): Promise<Result<DeviceRecord, AppError>> {
+    if (!this.running)
+      return err(appError('CONNECTION_LOST', 'not running', { peerId: null, reason: 'closed' }));
+    const dialed = await this.deps.transport.dial(address, DIAL_TIMEOUT_MS);
+    if (!dialed.ok) return dialed;
+    const established = await establishSession(
+      dialed.value,
+      'initiator',
+      this.options.session,
+      this.deps,
+    );
+    if (!established.ok) return established;
+    const session = established.value;
+    const record = this.records.get(session.peer.id);
+    if (!record) {
+      session.close(
+        appError('AUTH_FAILED', 'not a member', {
+          peerId: session.peer.id,
+          reason: 'not-a-member',
+        }),
+      );
+      return err(
+        appError('AUTH_FAILED', 'not a member', {
+          peerId: session.peer.id,
+          reason: 'not-a-member',
+        }),
+      );
+    }
+    this.learnAddress(record, address);
+    this.attach(record, session);
+    return ok(record.member);
   }
 
   /** Re-publishes the advertisement (e.g. after the group key changed). */
@@ -277,6 +327,30 @@ export class PeerManager {
     this.publish();
   }
 
+  private learnAddress(record: PeerRecord, address: PeerAddress): void {
+    const known = record.lastKnownAddress;
+    record.lastKnownAddress = address;
+    if (known?.host !== address.host || known.port !== address.port) {
+      this.options.onAddressLearned?.(record.member.id, address);
+    }
+  }
+
+  private recentFailures(host: string): number {
+    const since = this.deps.clock.now() - FAILED_HANDSHAKE_WINDOW_MS;
+    const recent = (this.failedHandshakes.get(host) ?? []).filter((at) => at > since);
+    if (recent.length === 0) this.failedHandshakes.delete(host);
+    else this.failedHandshakes.set(host, recent);
+    return recent.length;
+  }
+
+  private recordFailure(host: string): void {
+    this.recentFailures(host);
+    this.failedHandshakes.set(host, [
+      ...(this.failedHandshakes.get(host) ?? []),
+      this.deps.clock.now(),
+    ]);
+  }
+
   private isRunning(): boolean {
     return this.running;
   }
@@ -330,7 +404,7 @@ export class PeerManager {
       record.handshaking = false;
       if (established.ok) {
         record.connecting = false;
-        record.lastKnownAddress = address;
+        this.learnAddress(record, address);
         this.attach(record, established.value);
         return;
       }
@@ -355,6 +429,30 @@ export class PeerManager {
       raw.close('not running');
       return;
     }
+    const host = hostOf(raw.remoteAddress);
+    if (this.inbound >= MAX_INBOUND_CONNECTIONS) {
+      this.deps.logger.warn('too many connections', { from: host });
+      raw.close('too many connections');
+      return;
+    }
+    if (this.recentFailures(host) >= MAX_FAILED_HANDSHAKES) {
+      this.deps.logger.warn('rate limited', { from: host });
+      // Say why, so a removed device still shows "pair again" instead of a vague error.
+      raw.send(
+        encodeFrame({
+          v: PROTOCOL_VERSION,
+          t: 'ERROR',
+          code: 'AUTH_FAILED',
+          message: 'too many failed attempts, try again later',
+        }),
+      );
+      raw.close('rate limited');
+      return;
+    }
+    this.inbound += 1;
+    raw.onClose(() => {
+      this.inbound -= 1;
+    });
     const first = await readFirstFrameType(raw, FIRST_FRAME_TIMEOUT_MS, this.deps.clock);
     if (!first) return;
     const connection = replayFirstMessage(raw, first.raw);
@@ -384,6 +482,7 @@ export class PeerManager {
         from: connection.remoteAddress,
         code: established.error.code,
       });
+      if (established.error.code !== 'CONNECTION_LOST') this.recordFailure(host);
       return;
     }
     const session = established.value;
@@ -581,4 +680,9 @@ function replayFirstMessage(connection: TransportConnection, first: string): Tra
       };
     },
   };
+}
+
+/** `192.168.1.7:51234` → `192.168.1.7`; `[fe80::1]:5` → `[fe80::1]`. */
+function hostOf(remoteAddress: string): string {
+  return remoteAddress.replace(/:\d+$/, '');
 }

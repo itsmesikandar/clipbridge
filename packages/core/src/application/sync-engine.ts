@@ -73,6 +73,8 @@ export interface SyncEngineOptions {
 }
 
 const SEEN_CAPACITY = 500;
+/** A peer clock more than a day ahead is treated as wrong and does not move ours. */
+const MAX_CLOCK_AHEAD_MS = 24 * 60 * 60 * 1000;
 /** A chunked image must complete within this time. */
 const ASSEMBLY_TIMEOUT_MS = 30_000;
 const MAX_ASSEMBLIES_PER_PEER = 2;
@@ -117,6 +119,12 @@ export class SyncEngine {
   >();
   /** Most recent clip that this device copied or applied. */
   private latest: Recency | null = null;
+  /**
+   * Hybrid logical clock for `createdAt`: never behind the newest clip seen, so
+   * a copy made after receiving a clip is newer even if this device's clock is
+   * behind (newest-wins stays correct with clock skew between devices).
+   */
+  private hlc = 0;
   private lastAppliedHash: string | null = null;
   private stopWatching: Unsubscribe | null = null;
 
@@ -221,10 +229,11 @@ export class SyncEngine {
       this.lastErrorStore.set(sized.error);
       return sized;
     }
+    const createdAt = this.nextTimestamp();
     const clip: Clip = {
-      id: createClipId(this.deps.clock.now(), this.deps.random.randomBytes(10)),
+      id: createClipId(createdAt, this.deps.random.randomBytes(10)),
       origin: this.options.selfId,
-      createdAt: this.deps.clock.now(),
+      createdAt,
       content,
       hash: computeContentHash(content),
     };
@@ -321,6 +330,7 @@ export class SyncEngine {
       this.deps.logger.warn('dropping clip from unknown origin', { peerId: source.peer.id });
       return null;
     }
+    this.observeTimestamp(clip.createdAt);
     this.seen.add(clip.id);
     this.storeInHistory(clip);
     this.broadcastClip(clip, source.peer.id, clip.origin);
@@ -500,6 +510,17 @@ export class SyncEngine {
       },
     });
     this.queueImage(session, clip, content.data);
+  }
+
+  private nextTimestamp(): number {
+    this.hlc = Math.max(this.deps.clock.now(), this.hlc + 1);
+    return this.hlc;
+  }
+
+  /** Moves the logical clock forward; ignores clocks set far in the future. */
+  private observeTimestamp(createdAt: number): void {
+    if (createdAt - this.deps.clock.now() > MAX_CLOCK_AHEAD_MS) return;
+    this.hlc = Math.max(this.hlc, createdAt);
   }
 
   private storeInHistory(clip: Clip): void {

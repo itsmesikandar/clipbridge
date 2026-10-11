@@ -23,7 +23,7 @@ import type { LoggerPort } from '../ports/logger';
 import type { LocalNetworkPermission, NetworkInfoPort } from '../ports/network-info';
 import type { NotifierPort } from '../ports/notifier';
 import type { RandomPort } from '../ports/random';
-import type { TransportPort, Unsubscribe } from '../ports/transport';
+import type { PeerAddress, TransportPort, Unsubscribe } from '../ports/transport';
 import type { Body, SealedKey } from '../protocol/frames';
 import { membershipFromWire, membershipToWire } from '../protocol/wire';
 import type { HistoryEntry } from './clip-history';
@@ -72,6 +72,10 @@ export interface EngineOptions {
   readonly settings?: Partial<EngineSettings>;
   /** Called whenever the member list or key changed; apps persist the new credentials. */
   readonly onGroupChanged?: (group: GroupCredentials) => void;
+  /** Addresses of paired computers that worked before (saved by the app). */
+  readonly knownAddresses?: Readonly<Record<string, PeerAddress>>;
+  /** Called when a computer was reached at an address; apps persist it. */
+  readonly onAddressLearned?: (deviceId: DeviceId, address: PeerAddress) => void;
 }
 
 export interface Engine {
@@ -101,6 +105,8 @@ export interface Engine {
   /** Removes a device and rotates the group key so it cannot read anything anymore. */
   removeMember(id: DeviceId): Result<void, AppError>;
   renameMember(id: DeviceId, name: string): Result<void, AppError>;
+  /** Connects to a paired device by IP address (when mDNS is blocked); returns who answered. */
+  connectTo(address: PeerAddress): Promise<Result<DeviceRecord, AppError>>;
 }
 
 /** Re-evaluates time-based status rules (e.g. the search grace period). */
@@ -165,6 +171,8 @@ class ClipBridgeEngine implements Engine {
         selfRole: roleOf(self.device.platform),
         groupTag: () => tag,
         listenPort: this.settingsStore.get().listenPort,
+        ...(options.knownAddresses ? { knownAddresses: options.knownAddresses } : {}),
+        ...(options.onAddressLearned ? { onAddressLearned: options.onAddressLearned } : {}),
         session: {
           credentials: { deviceId: this.selfId, identity: self.identity, keys: this.keys },
           membership: () => this.membershipStore.get(),
@@ -367,6 +375,10 @@ class ClipBridgeEngine implements Engine {
     });
     this.scheduleRekey();
     return ok(undefined);
+  }
+
+  connectTo(address: PeerAddress): Promise<Result<DeviceRecord, AppError>> {
+    return this.peerManager.connectTo(address);
   }
 
   renameMember(id: DeviceId, name: string): Result<void, AppError> {

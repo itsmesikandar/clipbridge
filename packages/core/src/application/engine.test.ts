@@ -139,6 +139,25 @@ describe('sync across 3 laptops and 2 phones', () => {
     expect(finals[0]).toBe(winner);
   });
 
+  it('newest wins even when a laptop clock is 5 minutes behind', async () => {
+    const { harness, members } = setup();
+    const ahead = harness.addDevice(members.l1, { subnet: HOME });
+    const behind = harness.addDevice(members.l2, { subnet: HOME, clockOffsetMs: -5 * 60_000 });
+    await harness.startAll([ahead, behind]);
+
+    ahead.clipboard.userCopies(text('first'));
+    await harness.clock.advance(1_000);
+    behind.clipboard.userCopies(text('second, copied later'));
+    await harness.clock.advance(1_000);
+
+    expect(textOf(ahead)).toBe('second, copied later');
+    expect(textOf(behind)).toBe('second, copied later');
+    expect(behind.engine.history.get().map((entry) => entry.clip.content)).toEqual([
+      text('second, copied later'),
+      text('first'),
+    ]);
+  });
+
   it('never sends content marked sensitive (password managers)', async () => {
     const { devices, harness } = await fullGroup();
     devices.l1.clipboard.userCopies(text('hunter2'), true);
@@ -268,6 +287,52 @@ describe('ownership: devices that are not paired get nothing', () => {
     expect(laptop.engine.peers.get().every((peer) => peer.state !== 'connected')).toBe(true);
   });
 
+  it('refuses a device that keeps failing to authenticate', async () => {
+    const { harness, members, group, random } = setup();
+    const laptop = harness.addDevice(members.l1, { subnet: HOME });
+    const intruder = createTestMember({ name: 'Intruder', platform: 'android' }, random);
+    const guess = signMembership(
+      {
+        ...group.membership,
+        members: [members.l1.device, intruder.device],
+        updatedBy: intruder.device.id,
+      },
+      intruder.identity,
+    );
+    const attacker = harness.addDevice(intruder, {
+      subnet: HOME,
+      group: { ...group, groupKey: random.randomBytes(32), membership: guess },
+    });
+    await harness.startAll([laptop, attacker]);
+    await harness.clock.advance(60_000);
+    const refused = laptop.logger.entries.filter((entry) => entry.message === 'rate limited');
+    expect(refused.length).toBeGreaterThan(0);
+    expect(
+      laptop.logger.entries.filter((entry) => entry.message === 'rejected incoming connection')
+        .length,
+    ).toBeLessThanOrEqual(5);
+  });
+
+  it('caps the number of incoming connections', async () => {
+    const { harness, members } = setup();
+    const laptop = harness.addDevice(members.l1, { subnet: HOME });
+    await harness.startAll([laptop]);
+    let closedByLaptop = 0;
+    for (let i = 0; i < 40; i++) {
+      const node = harness.network.createNode(`flood-${i}`, { subnet: HOME });
+      const dialed = await node.transport.dial({ host: 'Laptop-1', port: 47821 }, 1_000);
+      if (dialed.ok)
+        dialed.value.onClose((info) => {
+          if (!info.local) closedByLaptop += 1;
+        });
+    }
+    await harness.clock.advance(10);
+    expect(closedByLaptop).toBe(40 - 32);
+    expect(laptop.logger.entries.some((entry) => entry.message === 'too many connections')).toBe(
+      true,
+    );
+  });
+
   it('a removed phone learns it was removed and stops', async () => {
     const { harness, members, group } = setup();
     const withoutIphone: DeviceRecord[] = group.membership.members.filter(
@@ -358,6 +423,44 @@ describe('explaining connection problems', () => {
     phone.node.moveTo(HOME);
     await harness.clock.advance(1_000);
     expect(phone.engine.status.get().kind).toBe('CONNECTED');
+  });
+
+  it('connects by address and remembers it when mDNS is blocked', async () => {
+    const { harness, laptop, phone } = await laptopAndPhone();
+    // mDNS blocked: the laptop is not advertised to the phone.
+    laptop.node.advertisement = null;
+    await laptop.engine.start();
+    laptop.node.advertisement = null;
+    harness.network.refreshVisibility();
+    await phone.engine.start();
+    await harness.clock.advance(15_000);
+    expect(phone.engine.status.get().issue?.code).toBe('NO_DESKTOP_ONLINE');
+
+    const connected = await phone.engine.connectTo({ host: laptop.node.ipv4 ?? '', port: 47821 });
+    expect(connected.ok && connected.value.name).toBe('Laptop-1');
+    await harness.clock.advance(100);
+    expect(phone.engine.status.get().kind).toBe('CONNECTED');
+    expect(Object.values(phone.learnedAddresses)).toEqual([
+      { host: laptop.node.ipv4, port: 47821 },
+    ]);
+
+    // After a restart the saved address is tried on its own, still without mDNS.
+    await phone.engine.stop();
+    // Same identity on a new simulated node (node names must be unique).
+    const again = harness.addDevice(
+      { ...phone.member, device: { ...phone.member.device, name: 'Pixel again' } },
+      {
+        subnet: HOME,
+        knownAddresses: phone.learnedAddresses,
+      },
+    );
+    phone.node.moveTo(null);
+    await again.engine.start();
+    await harness.clock.advance(2_000);
+    expect(again.engine.status.get().kind).toBe('CONNECTED');
+
+    const wrong = await again.engine.connectTo({ host: '192.168.1.250', port: 47821 });
+    expect(!wrong.ok && wrong.error.code).toBe('PEER_UNREACHABLE');
   });
 
   it('PEER_UNREACHABLE when a firewall blocks the laptop', async () => {

@@ -5,6 +5,7 @@ import {
   type GroupCredentials,
 } from '../application/engine';
 import type { Membership } from '../domain/membership';
+import type { PeerAddress } from '../ports/transport';
 import { FakeClock } from './fake-clock';
 import { FakeClipboard, FakeNotifier, MemoryLogger } from './fakes';
 import type { TestGroup, TestMember } from './fixtures';
@@ -21,12 +22,18 @@ export interface TestDevice {
   readonly adoptedMemberships: Membership[];
   /** Every credential change reported through `onGroupChanged`. */
   readonly groupChanges: GroupCredentials[];
+  /** Addresses reported through `onAddressLearned`. */
+  readonly learnedAddresses: Record<string, PeerAddress>;
 }
 
 export interface TestDeviceOptions extends NodeOptions {
+  /** This device's clock is off by this much (clock skew between devices). */
+  readonly clockOffsetMs?: number;
   readonly settings?: Partial<EngineSettings>;
   /** Overrides group credentials (e.g. a device holding a stale key). */
   readonly group?: GroupCredentials;
+  /** Addresses saved from an earlier run. */
+  readonly knownAddresses?: Readonly<Record<string, PeerAddress>>;
 }
 
 /** Wires a member into the simulated network with fake ports. */
@@ -44,13 +51,19 @@ export class TestHarness {
     const logger = new MemoryLogger();
     const adoptedMemberships: Membership[] = [];
     const groupChanges: GroupCredentials[] = [];
+    const learnedAddresses: Record<string, PeerAddress> = {};
     const isPhone = member.device.platform === 'android' || member.device.platform === 'ios';
     const engine = createEngine({
       self: member,
       group: options.group ?? this.group,
       settings: options.settings ?? {},
       ports: {
-        clock: this.clock,
+        clock: options.clockOffsetMs
+          ? {
+              now: () => this.clock.now() + (options.clockOffsetMs ?? 0),
+              schedule: (delayMs, callback) => this.clock.schedule(delayMs, callback),
+            }
+          : this.clock,
         random: new SeededRandom(this.seed++),
         logger,
         transport: node.transport,
@@ -59,12 +72,26 @@ export class TestHarness {
         clipboard: isPhone ? clipboard.asPhoneClipboard() : clipboard,
         notifier,
       },
+      ...(options.knownAddresses ? { knownAddresses: options.knownAddresses } : {}),
+      onAddressLearned: (deviceId, address) => {
+        learnedAddresses[deviceId] = address;
+      },
       onGroupChanged: (group) => {
         groupChanges.push(group);
         adoptedMemberships.push(group.membership);
       },
     });
-    return { member, node, engine, clipboard, notifier, logger, adoptedMemberships, groupChanges };
+    return {
+      member,
+      node,
+      engine,
+      clipboard,
+      notifier,
+      logger,
+      adoptedMemberships,
+      groupChanges,
+      learnedAddresses,
+    };
   }
 
   /** Starts engines and lets discovery, dialing and handshakes complete. */
