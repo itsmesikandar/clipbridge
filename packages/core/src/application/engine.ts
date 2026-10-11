@@ -86,6 +86,12 @@ export interface Engine {
   readonly listeningPort: number | null;
   start(): Promise<Result<void, AppError>>;
   stop(): Promise<void>;
+  /**
+   * Call when the app returns to the foreground (iOS suspends sockets in the
+   * background) or the computer wakes from sleep: drops possibly dead
+   * connections and reconnects to everyone now; missed clips then catch up.
+   */
+  resume(): Promise<void>;
   /** Sends content the user chose explicitly (phones: share sheet). */
   sendClip(content: ClipContent): Result<Clip, AppError>;
   updateSettings(patch: Partial<EngineSettings>): void;
@@ -253,6 +259,19 @@ class ClipBridgeEngine implements Engine {
     for (const unsubscribe of this.subscriptions.splice(0)) unsubscribe();
     this.sync.stop();
     await this.peerManager.stop();
+  }
+
+  async resume(): Promise<void> {
+    if (!this.running) return;
+    const { clock, networkInfo, logger } = this.options.ports;
+    logger.info('resuming');
+    this.searchingSince = clock.now();
+    this.peerManager.reconnectAll(
+      appError('CONNECTION_LOST', 'reconnecting after resume', { peerId: null, reason: 'resumed' }),
+    );
+    this.network = await networkInfo.current();
+    this.peerManager.handleNetworkChanged(this.network.subnet);
+    this.refreshStatus();
   }
 
   sendClip(content: ClipContent): Result<Clip, AppError> {

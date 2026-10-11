@@ -256,6 +256,19 @@ describe('AppController on a phone', () => {
       text: 'to phone',
     });
     expect(phone.clipboard.writes).toEqual([]); // phones wait for the user to tap Copy
+
+    // Auto-copy while the app is open.
+    phone.controller.setApplyToClipboard(true);
+    laptop.clipboard.userCopies({ kind: 'text', text: 'auto' });
+    await clock.advance(100);
+    expect(phone.clipboard.writes).toEqual([{ kind: 'text', text: 'auto' }]);
+    phone.controller.setApplyToClipboard(false);
+    laptop.clipboard.userCopies({ kind: 'text', text: 'not auto' });
+    await clock.advance(100);
+    expect(phone.clipboard.writes).toHaveLength(1);
+    await phone.controller.resume();
+    await clock.advance(100);
+    expect(phone.controller.snapshot.get().status.kind).toBe('CONNECTED');
     expect(phone.controller.sendClip({ kind: 'text', text: '' }).ok).toBe(false);
   });
 });

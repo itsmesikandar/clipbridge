@@ -1,5 +1,5 @@
 import { type ReactElement, useState } from 'react';
-import { Alert, ScrollView, TextInput } from 'react-native';
+import { Alert, Platform, ScrollView, TextInput } from 'react-native';
 
 import { Button, Card, Label, styles, ToggleRow, usePalette } from '@/components/ui';
 import { useAppSnapshot, useContainer, useStore } from '@/state/app-context';
@@ -54,12 +54,25 @@ export function SettingsView(): ReactElement {
           onChange={(value) => void controller.updateSettings({ notifyOnReceive: value })}
         />
         <ToggleRow
-          label="Stay connected in the background"
-          hint="Keeps a small notification so clips arrive while the app is closed."
-          value={prefs.backgroundSync}
-          onChange={(value) => void preferences.update({ backgroundSync: value })}
+          label="Copy automatically while open"
+          hint="Clips from your computers go straight to this phone's clipboard while ClipBridge is on screen."
+          value={prefs.autoCopyOnOpen}
+          onChange={(value) => void preferences.update({ autoCopyOnOpen: value })}
         />
-        {prefs.backgroundSync && !batteryOk && (
+        {Platform.OS === 'android' ? (
+          <ToggleRow
+            label="Stay connected in the background"
+            hint="Keeps a small notification so clips arrive while the app is closed."
+            value={prefs.backgroundSync}
+            onChange={(value) => void preferences.update({ backgroundSync: value })}
+          />
+        ) : (
+          <Label muted small>
+            iPhone apps cannot stay connected in the background without a cloud service. Open
+            ClipBridge to receive the latest clips; it catches up in a moment.
+          </Label>
+        )}
+        {Platform.OS === 'android' && prefs.backgroundSync && !batteryOk && (
           <>
             <Label tone="warn" small>
               Battery saving may stop ClipBridge in the background.

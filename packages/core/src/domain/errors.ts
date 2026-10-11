@@ -26,7 +26,9 @@ export type ConnectionLostReason =
   | 'replaced'
   | 'handshake-timeout'
   /** Reconnecting with a new group key after a device was removed. */
-  | 'rekey';
+  | 'rekey'
+  /** Reconnecting after the app came back from the background or the computer woke up. */
+  | 'resumed';
 
 export interface AppErrorDetailsMap {
   /** No Wi-Fi/LAN connection (e.g. phone on mobile data only). */

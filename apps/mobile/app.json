@@ -10,7 +10,13 @@
     "platforms": ["android", "ios"],
     "ios": {
       "icon": "./assets/expo.icon",
-      "bundleIdentifier": "com.clipbridge.app"
+      "bundleIdentifier": "com.clipbridge.app",
+      "supportsTablet": false,
+      "infoPlist": {
+        "NSLocalNetworkUsageDescription": "ClipBridge finds your computers on this Wi-Fi to sync your clipboard. Nothing is sent to the internet.",
+        "NSBonjourServices": ["_clipbridge._tcp"],
+        "ITSAppUsesNonExemptEncryption": false
+      }
     },
     "android": {
       "package": "com.clipbridge.app",
@@ -23,11 +29,14 @@
       "predictiveBackGestureEnabled": false,
       "permissions": ["android.permission.CAMERA", "android.permission.POST_NOTIFICATIONS"],
       "blockedPermissions": [
+        "android.permission.READ_EXTERNAL_STORAGE",
         "android.permission.RECORD_AUDIO",
-        "android.permission.SYSTEM_ALERT_WINDOW"
+        "android.permission.SYSTEM_ALERT_WINDOW",
+        "android.permission.WRITE_EXTERNAL_STORAGE"
       ]
     },
     "plugins": [
+      "./plugins/with-local-notifications-only",
       "expo-router",
       [
         "expo-splash-screen",
@@ -41,7 +50,8 @@
         "expo-camera",
         {
           "cameraPermission": "ClipBridge uses the camera only to scan the pairing QR code shown on your computer.",
-          "recordAudioAndroid": false
+          "recordAudioAndroid": false,
+          "microphonePermission": false
         }
       ],
       [

@@ -10,7 +10,7 @@ import { classifyText } from '@clipbridge/core';
 import * as Notifications from 'expo-notifications';
 import { useShareIntentContext } from 'expo-share-intent';
 import { useEffect, useRef } from 'react';
-import { Linking } from 'react-native';
+import { AppState, Linking, Platform } from 'react-native';
 
 import { SyncService } from '../../../modules/sync-service';
 import { ACTION_COPY, ACTION_OPEN, setUpNotifications } from '../../adapters/expo-notifier';
@@ -28,6 +28,7 @@ export function useSystemEffects(): ShareOutcome | null {
   const snapshot = useAppSnapshot();
   useNotifications(container, snapshot.pairing.paired);
   useBackgroundService(container, snapshot);
+  useAppLifecycle(container);
   return useIncomingShares(container);
 }
 
@@ -66,6 +67,34 @@ async function handleNotificationAction(
     await Linking.openURL(content.url);
   }
   Notifications.clearLastNotificationResponse();
+}
+
+/**
+ * When the app comes back to the foreground: reconnect where sockets may have
+ * died (always on iOS; on Android only without the background service), and
+ * turn auto-copy on while the app is visible.
+ */
+function useAppLifecycle(container: MobileContainer): void {
+  const prefs = useStore(container.preferences.prefs);
+
+  useEffect(() => {
+    const { controller } = container;
+    const apply = (state: string): void => {
+      controller.setApplyToClipboard(state === 'active' && prefs.autoCopyOnOpen);
+    };
+    apply(AppState.currentState);
+    let wasBackground = AppState.currentState !== 'active';
+    const subscription = AppState.addEventListener('change', (state) => {
+      apply(state);
+      if (state === 'active' && wasBackground && (Platform.OS === 'ios' || !prefs.backgroundSync)) {
+        void controller.resume();
+      }
+      wasBackground = state !== 'active';
+    });
+    return () => {
+      subscription.remove();
+    };
+  }, [container, prefs.autoCopyOnOpen, prefs.backgroundSync]);
 }
 
 /** Keeps the Android foreground service in step with pairing, status and the setting. */

@@ -2,12 +2,14 @@ import { createSimpleStore, type SimpleStore } from '@clipbridge/app';
 import type { ReadonlyStore, StoragePort } from '@clipbridge/core';
 
 export interface MobilePrefs {
-  /** Keep a foreground service running so clips arrive while the app is closed. */
+  /** Android: keep a foreground service running so clips arrive while the app is closed. */
   readonly backgroundSync: boolean;
+  /** Write received clips straight to the clipboard while ClipBridge is open. */
+  readonly autoCopyOnOpen: boolean;
 }
 
 const KEY = 'mobile-prefs';
-const DEFAULTS: MobilePrefs = { backgroundSync: true };
+const DEFAULTS: MobilePrefs = { backgroundSync: true, autoCopyOnOpen: false };
 
 /** Phone-only settings, stored next to the shared ones. */
 export class MobilePreferences {
@@ -21,9 +23,12 @@ export class MobilePreferences {
 
   async load(): Promise<void> {
     const stored = await this.storage.get(KEY);
-    if (stored && typeof stored === 'object' && 'backgroundSync' in stored) {
-      this.store.set({ backgroundSync: stored.backgroundSync !== false });
-    }
+    if (!stored || typeof stored !== 'object') return;
+    const values = stored as Partial<Record<keyof MobilePrefs, unknown>>;
+    this.store.set({
+      backgroundSync: values.backgroundSync !== false,
+      autoCopyOnOpen: values.autoCopyOnOpen === true,
+    });
   }
 
   async update(patch: Partial<MobilePrefs>): Promise<void> {

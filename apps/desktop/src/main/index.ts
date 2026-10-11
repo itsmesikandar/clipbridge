@@ -72,6 +72,8 @@ function watchNetwork(container: Container): void {
     container.logger.info('system resumed');
     container.networkInfo.refresh();
     restartDiscovery();
+    // Connections from before sleep are probably dead; reconnect now instead of waiting for heartbeats.
+    void container.controller.resume();
   });
 }
 

@@ -186,6 +186,25 @@ describe('sync across 3 laptops and 2 phones', () => {
     expect(phone.notifier.received.map((r) => r.clip.content)).toEqual([text('new')]);
   });
 
+  it('resume() reconnects right away and catches up on clips missed while suspended', async () => {
+    const { devices, harness } = await fullGroup();
+    // The iPhone was suspended: its sockets are silently dead.
+    for (const laptop of ['Laptop-1', 'Laptop-2', 'Laptop-3'])
+      harness.network.block(laptop, 'iPhone');
+    devices.l1.clipboard.userCopies(text('while you were away'));
+    await harness.clock.advance(1_000);
+    expect(devices.p2.engine.history.get()).toHaveLength(0);
+
+    for (const laptop of ['Laptop-1', 'Laptop-2', 'Laptop-3'])
+      harness.network.unblock(laptop, 'iPhone');
+    await devices.p2.engine.resume();
+    await harness.clock.advance(100);
+    expect(devices.p2.engine.status.get().kind).toBe('CONNECTED');
+    expect(devices.p2.notifier.received.map((r) => r.clip.content)).toEqual([
+      text('while you were away'),
+    ]);
+  });
+
   it('reconnects with backoff after a laptop restarts', async () => {
     const { devices, harness } = await fullGroup();
     await devices.l2.engine.stop();

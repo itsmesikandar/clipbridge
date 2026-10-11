@@ -8,7 +8,7 @@ import {
 import { classifyText } from '@clipbridge/core';
 import { Link } from 'expo-router';
 import { type ReactElement, useState } from 'react';
-import { Linking, ScrollView, View } from 'react-native';
+import { Linking, Platform, ScrollView, View } from 'react-native';
 
 import { readClipboardText } from '@/adapters/platform-adapters';
 import { Banner, Button, Card, Dot, Label, styles, usePalette } from '@/components/ui';
@@ -59,7 +59,16 @@ export function HomeView({ snapshot }: { readonly snapshot: AppSnapshot }): Reac
         {removed && (
           <Button title="Set up again" onPress={() => void controller.resetThisDevice()} />
         )}
+        {snapshot.status.issue?.code === 'LOCAL_NETWORK_PERMISSION' && (
+          <Button title="Open Settings" onPress={() => void Linking.openSettings()} />
+        )}
       </Banner>
+      {Platform.OS === 'ios' && (
+        <Label muted small>
+          Clips from your computers arrive while ClipBridge is open. Opening it catches up on what
+          you missed.
+        </Label>
+      )}
 
       {share && <Label tone={share.ok ? 'ok' : 'error'}>{share.message}</Label>}
 

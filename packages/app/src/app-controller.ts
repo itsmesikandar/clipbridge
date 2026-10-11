@@ -119,6 +119,7 @@ export class AppController {
   private joinView: JoiningView = idleJoin;
   private readonly store: SimpleStore<AppSnapshot>;
   private initialized: Promise<void> | null = null;
+  private applyToClipboardOverride = false;
 
   constructor(private readonly deps: AppControllerDeps) {
     this.store = createSimpleStore(this.buildSnapshot());
@@ -159,6 +160,20 @@ export class AppController {
     this.stopJoinSearch();
     this.joinAttempt?.cancel();
     await this.stopEngine();
+  }
+
+  /** The app is visible again (phones) or the computer woke up: reconnect and catch up. */
+  async resume(): Promise<void> {
+    await this.engine?.resume();
+  }
+
+  /**
+   * Phones: write received clips straight to the clipboard while the app is open
+   * ("auto-copy"). Computers always do; this only changes phones.
+   */
+  setApplyToClipboard(apply: boolean): void {
+    this.applyToClipboardOverride = apply;
+    this.engine?.updateSettings({ applyToClipboard: this.applyToClipboard() });
   }
 
   async updateSettings(patch: SettingsPatch): Promise<void> {
@@ -441,8 +456,7 @@ export class AppController {
       self,
       group,
       ports: this.deps.ports,
-      // Computers write received clips to the clipboard; phones let the user tap Copy.
-      settings: { ...this.settings, applyToClipboard: roleOf(self.device.platform) === 'hub' },
+      settings: { ...this.settings, applyToClipboard: this.applyToClipboard() },
       onGroupChanged: (next) => {
         this.group = next;
         void this.deps.credentials.saveGroup(next);
@@ -473,6 +487,12 @@ export class AppController {
     await this.engine?.stop();
     this.engine = null;
     this.startError = null;
+  }
+
+  /** Computers write received clips to the clipboard; phones only while auto-copy is on. */
+  private applyToClipboard(): boolean {
+    const self = this.requireSelf();
+    return roleOf(self.device.platform) === 'hub' || this.applyToClipboardOverride;
   }
 
   private async loadSettings(): Promise<SettingsView> {
