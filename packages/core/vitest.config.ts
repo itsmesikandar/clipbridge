@@ -6,7 +6,9 @@ export default defineConfig({
     coverage: {
       provider: 'v8',
       include: ['src/**/*.ts'],
-      exclude: ['src/**/*.test.ts', 'src/index.ts'],
+      exclude: ['src/**/*.test.ts', 'src/index.ts', 'src/testing/**', 'src/ports/**'],
+      // Milestone 1 Definition of Done: core coverage ≥ 90 %.
+      thresholds: { lines: 90, statements: 90, functions: 90, branches: 80 },
     },
   },
 });

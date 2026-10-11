@@ -8,14 +8,13 @@ Copy on one device, paste on another — text, URLs and images between your lapt
 
 ## Repository layout
 
-| Path                     | What                                                                         |
-| ------------------------ | ---------------------------------------------------------------------------- |
-| `apps/desktop`           | Electron app (Windows, macOS)                                                |
-| `apps/mobile`            | Expo / React Native app (Android, iOS)                                       |
-| `packages/core`          | Shared, platform-neutral logic: protocol, crypto, sync, pairing, diagnostics |
-| `packages/test-utils`    | Test doubles for core                                                        |
-| `packages/tsconfig`      | Shared TypeScript configs                                                    |
-| `packages/eslint-config` | Shared ESLint configs, incl. architecture boundary rules                     |
+| Path                     | What                                                                                                                     |
+| ------------------------ | ------------------------------------------------------------------------------------------------------------------------ |
+| `apps/desktop`           | Electron app (Windows, macOS)                                                                                            |
+| `apps/mobile`            | Expo / React Native app (Android, iOS)                                                                                   |
+| `packages/core`          | Shared, platform-neutral logic: protocol, crypto, sync, pairing, diagnostics; test doubles in `@clipbridge/core/testing` |
+| `packages/tsconfig`      | Shared TypeScript configs                                                                                                |
+| `packages/eslint-config` | Shared ESLint configs, incl. architecture boundary rules                                                                 |
 
 ## Prerequisites
 

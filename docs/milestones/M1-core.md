@@ -1,5 +1,7 @@
 # M1 — Shared Core
 
+**Status:** ✅ Done — 158 tests, 95.8 % line coverage.
+
 **Goal:** all the "brain" of ClipBridge in `packages/core`: domain model, protocol, crypto, sync engine, peer management, error diagnosis. Pure TypeScript, no UI, no real network — proven by tests.
 
 **Depends on:** M0.
@@ -8,111 +10,119 @@
 
 ## 1. What we build
 
-| Module                | Content                                                                                                                                                           |
-| --------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `domain/`             | `Clip`, `Device`, `Group`, value objects (`DeviceId`, `ClipId`, `KeyEpoch`), `AppError` + all error codes from PLAN §9.3, `Result<T, E>` helper                   |
-| `ports/`              | `ClipboardPort`, `TransportPort`, `DiscoveryPort`, `SecureStoragePort`, `StoragePort`, `NotifierPort`, `NetworkInfoPort`, `LoggerPort`, `ClockPort`, `RandomPort` |
-| `protocol/`           | zod schemas for all frames (PLAN §7), `encodeFrame` / `decodeFrame`, version check                                                                                |
-| `crypto/`             | AEAD (XChaCha20-Poly1305), HKDF, HMAC, Ed25519, X25519, seal/open to a public key, handshake                                                                      |
-| `application/`        | `SyncEngine`, `PeerManager`, `ConnectionStatusService`, `ClipHistory`, `Membership` (data part only; pairing UI flows come in M3)                                 |
-| `packages/test-utils` | `InMemoryNetwork` (connects N engines), `FakeClock`, `FakeClipboard`, fixtures                                                                                    |
+| Module         | Content                                                                                                                                                               |
+| -------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `lib/`         | base64, UTF-8, byte helpers, canonical JSON — no platform APIs (Hermes lacks `TextDecoder`)                                                                           |
+| `domain/`      | `Clip`, `DeviceRecord`, `Membership`, `NetworkSnapshot`, `PeerView`, `ConnectionStatus`, ids (`DeviceId`, `ClipId` = UUIDv7), `AppError` with typed details, `Result` |
+| `ports/`       | `ClipboardPort`, `TransportPort`, `DiscoveryPort`, `SecureStoragePort`, `StoragePort`, `NotifierPort`, `NetworkInfoPort`, `LoggerPort`, `ClockPort`, `RandomPort`     |
+| `crypto/`      | AEAD (XChaCha20-Poly1305), HKDF, HMAC, SHA-256, Ed25519, X25519, sealed box, group tag, content hash                                                                  |
+| `protocol/`    | zod schemas for all frames and bodies (PLAN §7), codec with version check, handshake, `SecureChannel`, wire conversion                                                |
+| `application/` | `PeerSession`, `PeerManager`, `SyncEngine`, `ClipHistory`, membership service, `diagnose()`, `createEngine()`                                                         |
+| `testing/`     | `InMemoryNetwork` (subnets, firewalls, app closed), `FakeClock`, `FakeClipboard`, `FakeNotifier`, `MemoryLogger`, `SeededRandom`, fixtures, `TestHarness`             |
 
 ## 2. How it works
 
 ### 2.1 Clip lifecycle inside the engine
 
 ```
-ClipboardPort.onChange(content)
-  → classify (text | url | image), hash (SHA-256)
-  → skip if hash == lastAppliedHash (loop prevention) or sensitive or over limit
-  → Clip { id: UUIDv7, origin: self, createdAt: now }
-  → history.add(clip); seen.add(clip.id)
-  → for each connected peer: send CLIP (encrypted with session key)
+ClipboardPort.watch(change)                 (desktop) — or engine.sendClip(content) (phone share)
+  → skip if sensitive, sending disabled, empty, or hash == lastAppliedHash (our own write)
+  → skip if the same content was copied < 2 s ago
+  → check size limits → PAYLOAD_TOO_LARGE
+  → Clip { id: UUIDv7, origin: self, createdAt: now, hash }
+  → history + seen-ids; send CLIP to every session
 
-Transport.onFrame(peer, CLIP)
-  → decrypt + validate schema
-  → if seen.has(id): drop
-  → seen.add(id); history.add(clip)
-  → forward to all connected peers except `peer`
-  → if receive enabled and clip newer than last local copy:
-        desktop: ClipboardPort.write(clip); lastAppliedHash = clip.hash
-        phone:   NotifierPort.show(clip)
-  → send ACK
+Session body CLIP from peer P
+  → seen? → only ACK
+  → origin must be a member; schema + size valid; hash recomputed
+  → store in history; forward to every session except P and the origin
+  → if receive enabled and newer than the latest clip on this device:
+        desktop: write to clipboard (and remember hash → no echo)
+        phone:   NotifierPort.clipReceived (user taps Copy / Open)
+  → ACK to P (sender marks "delivered")
+
+On every new session: HISTORY_REQ → HISTORY_RES; only the newest missed clip is applied/notified.
 ```
 
-### 2.2 Handshake (crypto/handshake.ts)
+### 2.2 Handshake and secure channel (`protocol/`)
 
-Pure functions over byte arrays, so they are tested without any network:
+Pure functions, tested without any network: `createHello`, `handshakeTranscript`, `createAuth`, `verifyPeerAuth` (epoch, id ↔ key, member list, MAC, signature), `deriveSessionKeys` (one key per direction). `SecureChannel` seals bodies into `SEC` frames with strictly increasing sequence numbers. Details: PLAN §7.1, §8.3.
 
-1. `createHello(identity, epoch)` → `{ nonce, hello }`
-2. `createAuth(groupKey, identity, transcript, role)` → `{ mac, sig }`
-3. `verifyAuth(groupKey, members, transcript, auth)` → `Result<PeerIdentity, AUTH_FAILED>`
-4. `deriveSessionKey(groupKey, nonceA, nonceB)` → 32 bytes
+### 2.3 PeerSession and PeerManager
 
-### 2.3 PeerManager
+- `establishSession()` runs the handshake on a transport connection (10 s timeout), answers bad input with an `ERROR` frame, then keeps the session alive with heartbeats (PING every 15 s, dead after 35 s silence).
+- `PeerManager`: hubs listen and advertise; between hubs the smaller id dials; phones dial hubs. Uses discovered addresses and the last known address. Retries with backoff (1 s → 30 s, ±20 % jitter); network change retries immediately. Every failure is stored as the peer's `lastError`.
 
-One state machine per peer: `DISCOVERED → CONNECTING → HANDSHAKING → CONNECTED → (CLOSED → backoff → CONNECTING)`. Handles:
+### 2.4 Diagnosis (`diagnose()`)
 
-- dial rules (desktop-desktop: smaller id dials; phone always dials),
-- exponential backoff with jitter (1 s → 30 s cap),
-- heartbeats (15 s ping, 2 misses = dead),
-- maps every failure to an `AppError` (`PEER_UNREACHABLE`, `AUTH_FAILED`, `VERSION_MISMATCH`, …) and stores it as the peer's `lastError`.
+Pure function: network snapshot + permission + peer views + time searching → `ConnectionStatus { kind, connectedCount, peerCount, issue }`. Rules in priority order:
 
-### 2.4 ConnectionStatusService (the diagnosis brain)
+1. removed from group → `REMOVED_FROM_GROUP`
+2. no Wi-Fi/LAN (or mobile data only) → `NO_NETWORK`
+3. iOS Local Network denied → `LOCAL_NETWORK_PERMISSION`
+4. no other members → `NOT_PAIRED`
+5. some connected → `CONNECTED` / `PARTIAL` (phones count only computers)
+6. phone in a group without computers → `NO_DESKTOP_ONLINE`
+7. a peer failed with `VERSION_MISMATCH` or `AUTH_FAILED` → that error
+8. a discovered peer cannot be reached → `PEER_UNREACHABLE` (firewall, VPN)
+9. less than 10 s searching → `SEARCHING`
+10. all known peers were last seen on another subnet → `DIFFERENT_NETWORK` (with both subnets)
+11. otherwise → `NO_DESKTOP_ONLINE` (phone) / `NO_PEERS` (computer)
 
-Input: network info (IP, subnet, Wi-Fi on), paired members with `lastSeenNetwork`, discovered peers, per-peer state and last error.
-Output: one overall status + one primary `AppError` with fix steps. Rules are a pure function `diagnose(snapshot) → Diagnosis`, so every error case in PLAN §9.3 is a unit test. Example rules, in priority order:
-
-1. no LAN interface → `NO_NETWORK`
-2. no members → `NOT_PAIRED`
-3. 0 connected, 0 discovered, current subnet differs from all members' last subnet → `DIFFERENT_NETWORK`
-4. 0 connected, members discovered, all failing with timeout → `PEER_UNREACHABLE`
-5. 0 connected, 0 discovered, same subnet, last-known IPs fail → `NO_PEERS` (after 10 s) / `NETWORK_ISOLATION` (after 30 s and repeated)
-6. phone, 0 desktops connected → `NO_DESKTOP_ONLINE`
-7. some connected → `PARTIAL` / `CONNECTED`
-
-### 2.5 Public API (index.ts)
+### 2.5 Public API
 
 ```ts
-const engine = createEngine({ platform, ports, settings });
-engine.start();
-engine.stop();
-engine.status$; // observable overall status + diagnosis
-engine.peers$; // observable per-peer state
-engine.history$; // observable recent clips
-engine.sendClip(content); // used by phones (share sheet)
-engine.setReceiveEnabled(boolean);
+const engine = createEngine({ self, group, ports, settings, onMembershipChanged });
+await engine.start(); // Result: PORT_IN_USE, LOCAL_NETWORK_PERMISSION, …
+engine.status; // ReadonlyStore<ConnectionStatus>
+engine.peers; // ReadonlyStore<PeerView[]>
+engine.history; // ReadonlyStore<HistoryEntry[]>
+engine.lastSendError; // ReadonlyStore<AppError | null>
+engine.sendClip(content); // phones: share sheet
+engine.updateSettings({ sendEnabled, receiveEnabled, applyToClipboard, notifyOnReceive });
+await engine.stop();
 ```
 
-Observables are a tiny internal `Store<T>` (subscribe/get) — no RxJS dependency.
+Stores are a tiny `get` / `subscribe` observable — no RxJS.
 
 ## 3. Tasks
 
-- [ ] `Result`, `AppError`, error code enum + metadata (title key, message key, fix-step keys)
-- [ ] Domain entities + validation
-- [ ] Ports (interfaces only, documented)
-- [ ] Protocol schemas + codec + version check
-- [ ] Crypto primitives with official test vectors
-- [ ] Handshake functions
-- [ ] Seal/open for key rotation
-- [ ] `ClipHistory` (bounded, TTL) and seen-id cache (LRU 500)
-- [ ] `SyncEngine` (send, receive, forward, dedupe, loop prevention, newest-wins, limits)
-- [ ] `PeerManager` (state machine, backoff, heartbeat)
-- [ ] `ConnectionStatusService` + `diagnose()` rules
-- [ ] `createEngine` composition + `Store<T>`
-- [ ] Test utils: `InMemoryNetwork`, `FakeClock`, `FakeClipboard`
+- [x] `Result`, `AppError` with typed details per code
+- [x] Domain entities + validation
+- [x] Ports (interfaces only, documented)
+- [x] Protocol schemas + codec + version check
+- [x] Crypto primitives with official test vectors (FIPS 180-2, RFC 4231, RFC 8032, RFC 7748)
+- [x] Handshake functions + `SecureChannel`
+- [x] Sealed box for key rotation
+- [x] `ClipHistory` (bounded, TTL) and seen-id cache (500)
+- [x] `SyncEngine` (send, receive, forward, dedupe, loop prevention, newest-wins, limits, catch-up, ACK)
+- [x] `PeerManager` (dial rules, backoff, heartbeat via sessions, last known address)
+- [x] `diagnose()` rules
+- [x] `createEngine` composition + stores, membership exchange and removal
+- [x] Test doubles in `@clipbridge/core/testing`
 
-## 4. Tests (must exist)
+## 4. Tests
 
-- Crypto: encrypt/decrypt round trip, tamper detection (header, nonce, ciphertext), vectors.
-- Codec: valid frames pass, every malformed frame is rejected, unknown version → `VERSION_MISMATCH`.
-- Handshake: success; wrong group key; non-member identity; replayed nonce.
-- Sync with 5 engines (3 desktop, 2 phone) on `InMemoryNetwork`: clip from any device reaches all others exactly once; no loops; phone → phone through desktop; newest wins under concurrent copies.
-- PeerManager: backoff timings with `FakeClock`; heartbeat timeout.
-- `diagnose()`: one test per row of PLAN §9.3.
+| File                         | Covers                                                                                                        |
+| ---------------------------- | ------------------------------------------------------------------------------------------------------------- |
+| `lib/lib.test.ts`            | base64 (RFC 4648 vectors), UTF-8 incl. invalid input, bytes, canonical JSON                                   |
+| `domain/domain.test.ts`      | URL detection, size limits, recency order, UUIDv7, roles, subnets                                             |
+| `crypto/crypto.test.ts`      | known-answer vectors, AEAD tamper detection, signatures, sealed box, group tag                                |
+| `protocol/protocol.test.ts`  | codec, version mismatch, handshake failures (wrong key, epoch, outsider, impostor, replay), replay protection |
+| `application/*.test.ts`      | backoff, history, membership merge, one test per diagnosis rule, session timeouts and heartbeats              |
+| `application/engine.test.ts` | 3 laptops + 2 phones end to end; ownership (colleague, intruder, removed device); every network failure       |
 
-## 5. Definition of Done
+## 5. Decisions made during M1
 
-- `pnpm --filter @clipbridge/core test` green, coverage ≥ 90 %.
-- No platform imports in core (lint enforced).
-- Public API documented in `packages/core/README.md`.
+- **Test doubles live in `@clipbridge/core/testing`**, not a separate `test-utils` package: test-utils needs core and core's tests need test-utils, which is a circular dependency. The subpath export keeps them platform-neutral and usable by app tests too.
+- **Error texts live in the apps** (M2+). Core only defines codes and typed details; apps map them to titles, messages and fix steps.
+- **`NETWORK_ISOLATION` is not detected automatically yet.** With nothing discovered on the same subnet, "Wi-Fi blocks devices" and "the other app is closed" look identical. M1 reports `NO_PEERS` / `NO_DESKTOP_ONLINE`, and the fix steps mention guest Wi-Fi. M7 adds a real check.
+- **Persistence of history and per-peer "last seen"** is in memory for now; the desktop and mobile apps persist via `StoragePort` in M2/M4.
+
+## 6. Definition of Done
+
+- [x] `pnpm --filter @clipbridge/core test` green, coverage ≥ 90 % (enforced by Vitest thresholds).
+- [x] No platform imports in core (lint enforced).
+- [x] Desktop build and Android JS bundle include the new core (noble + zod) without errors.
+- [x] Public API documented in `packages/core/README.md`.
+- [ ] Runtime check of crypto on a real phone (Hermes) — first happens in M4.

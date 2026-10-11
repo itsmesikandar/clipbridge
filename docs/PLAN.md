@@ -144,27 +144,32 @@ Views are dumb React components. Each screen has a **presenter hook** (`useDevic
 
 ```
 packages/core/src/
-  domain/
-    clip.ts            Clip entity: id, kind (text|url|image), mime, bytes, hash, origin, createdAt
-    device.ts          Device: id, name, platform, publicKeys, lastSeenAt, lastSeenNetwork
-    group.ts           Group: id, keyEpoch, members, membershipVersion
-    errors.ts          AppError taxonomy (see §9)
+  lib/                 platform-neutral helpers: base64, UTF-8, bytes, canonical JSON
+  domain/              entities and rules, no dependencies on other layers
+    clip.ts            Clip: id (UUIDv7), origin, createdAt, content (text|url|image), hash; size limits
+    device.ts          DeviceRecord (public keys), platform → role (hub | client)
+    membership.ts      signed member list + precedence rule
+    network.ts         NetworkSnapshot, subnet helpers
+    errors.ts          AppError taxonomy with typed details (see §9)
+    status.ts          PeerView, ConnectionStatus
+    ids.ts, result.ts
+  crypto/              wrappers over @noble: AEAD, HKDF/HMAC, identity keys, sealed box, group tag
   protocol/
-    frames.ts          zod schemas for every frame type
+    frames.ts          zod schemas for every frame and encrypted body
     codec.ts           encode/decode + version check
-  crypto/
-    aead.ts            XChaCha20-Poly1305 encrypt/decrypt
-    keys.ts            identity keys (Ed25519 + X25519), group key generation
-    handshake.ts       mutual authentication
-    seal.ts            seal a secret to one device's public key
+    handshake.ts       mutual authentication (§8.3)
+    secure-channel.ts  encrypted SEC frames with replay protection (§7.1)
+    wire.ts            domain ↔ wire conversion
   application/
-    sync-engine.ts     send, receive, forward, dedupe, loop prevention
-    peer-manager.ts    connection lifecycle per peer, retries, backoff
-    connection-status.ts  aggregate status + diagnosis → AppError
-    pairing/           host and join state machines
-    membership.ts      add/remove device, key rotation
-    history.ts         bounded clip history + catch-up
+    peer-session.ts    handshake runner + heartbeat for one connection
+    peer-manager.ts    discovery, dial rules, retries/backoff, per-peer state
+    sync-engine.ts     send, receive, forward, dedupe, loop prevention, newest-wins, catch-up
+    diagnose.ts        pure rules: peers + network → status + AppError (§9)
+    membership-service.ts  sign / verify / merge member lists
+    engine.ts          composition root of core; the API apps use
+    pairing/           host and join state machines (Milestone 3)
   ports/               interfaces listed in §5.3
+  testing/             test doubles (in-memory LAN, fake clock, fixtures) → `@clipbridge/core/testing`
   index.ts             public API only
 ```
 
@@ -244,24 +249,31 @@ DISCOVERED → CONNECTING → HANDSHAKING → CONNECTED
 
 ## 7. Protocol
 
-All frames are JSON over WebSocket. Binary data (images) is base64 inside the encrypted payload. Max frame size: 15 MB.
+All frames are JSON over WebSocket. Binary data (images) is base64 inside the encrypted payload. Max raw frame size: 20 MB (lowered when images are chunked in M6).
 
-### 7.1 Envelope
+### 7.1 Frames
+
+Handshake frames are plain JSON (they contain nothing secret):
+
+```jsonc
+{ "v": 1, "t": "HELLO", "deviceId": "dev_…", "signPublicKey": "…", "nonce": "…", "epoch": 1, "role": "initiator" }
+{ "v": 1, "t": "AUTH", "mac": "…", "sig": "…" }
+{ "v": 1, "t": "ERROR", "code": "AUTH_FAILED", "message": "…" }
+```
+
+After the handshake every message is a `SEC` frame. The body type is inside the ciphertext, so an observer cannot tell a clip from a heartbeat:
 
 ```jsonc
 {
-  "v": 1, // protocol version
-  "t": "CLIP", // frame type
-  "id": "0192…", // UUIDv7 (time-ordered)
-  "from": "dev_8f3a…", // sender device id
-  "ts": 1760000000000, // sender clock, ms
-  "e": 3, // group key epoch
-  "n": "base64…", // 24-byte nonce
-  "c": "base64…", // ciphertext of the typed body; header fields are AEAD associated data
+  "v": 1,
+  "t": "SEC",
+  "s": 42, // sequence number per direction; must strictly increase (replay protection)
+  "n": "base64…", // 24-byte random nonce
+  "c": "base64…", // XChaCha20-Poly1305 ciphertext of the JSON body; "s" is associated data
 }
 ```
 
-Before the handshake completes only `HELLO`, `AUTH`, `ERROR` and pairing frames are accepted; they are not encrypted with the group key (pairing frames use the pairing session key).
+Encrypted bodies: `CLIP { clip }`, `ACK { clipId }`, `HISTORY_REQ { since }`, `HISTORY_RES { clips }`, `MEMBERSHIP { membership }`, `PING { ts }`, `PONG { ts }`. A clip carries `id` (UUIDv7), `origin`, `createdAt` and its content; the receiver recomputes the hash.
 
 ### 7.2 Frame types
 
@@ -288,11 +300,11 @@ Before the handshake completes only `HELLO`, `AUTH`, `ERROR` and pairing frames 
 
 ### 8.1 Keys
 
-| Key                                           | Where it lives               | Purpose                                                   |
-| --------------------------------------------- | ---------------------------- | --------------------------------------------------------- |
-| Identity key pair (Ed25519 sign + X25519 box) | each device, secure storage  | proves "I am device X"; receives sealed secrets           |
-| Group key (32 bytes) + epoch                  | every member, secure storage | encrypts all clips; proves group membership               |
-| Session key                                   | memory only                  | derived per connection: `HKDF(groupKey, nonceA ‖ nonceB)` |
+| Key                                           | Where it lives               | Purpose                                            |
+| --------------------------------------------- | ---------------------------- | -------------------------------------------------- |
+| Identity key pair (Ed25519 sign + X25519 box) | each device, secure storage  | proves "I am device X"; receives sealed secrets    |
+| Group key (32 bytes) + epoch                  | every member, secure storage | encrypts all clips; proves group membership        |
+| Session keys (one per direction)              | memory only                  | `HKDF(groupKey, salt = transcript)` per connection |
 
 ### 8.2 Pairing
 
@@ -309,9 +321,12 @@ Before the handshake completes only `HELLO`, `AUTH`, `ERROR` and pairing frames 
 
 ### 8.3 Connection authentication
 
-1. Both sides send `HELLO` with a fresh random nonce.
-2. Each side sends `AUTH = { mac: HMAC(groupKey, role ‖ nonces ‖ ids), sig: Ed25519(transcript) }`.
-3. Each side verifies the MAC (holds the group key) **and** that the signing key belongs to a current member. Otherwise: `ERROR AUTH_FAILED` and close.
+1. The dialer (initiator) sends `HELLO`; the responder answers with its own `HELLO`. Each contains a fresh 32-byte nonce, the device id, signing public key and key epoch.
+2. Both compute `transcript = SHA-256(label ‖ both HELLOs' fields, length-prefixed, initiator first)`.
+3. Each side sends `AUTH = { mac: HMAC(groupKey, label ‖ role ‖ transcript), sig: Ed25519(label ‖ role ‖ transcript) }`.
+4. Each side checks: same epoch; device id = hash of the signing key; device is in the current signed member list with that key; MAC valid (holds the group key); signature valid. Otherwise `ERROR AUTH_FAILED` and close.
+5. Both derive two keys (initiator→responder, responder→initiator) with HKDF over the group key and transcript, so frames cannot be reflected back.
+6. Heartbeat: `PING` every 15 s; the connection is dropped after 35 s of silence.
 
 ### 8.4 Unpair and key rotation
 
@@ -394,8 +409,8 @@ clipboard/
     desktop/                Electron app
     mobile/                 Expo app
   packages/
-    core/                   shared domain + application logic (no platform code)
-    test-utils/             in-memory transport, fake clock, fixtures
+    core/                   shared domain + application logic (no platform code);
+                            test doubles under @clipbridge/core/testing
     tsconfig/               shared tsconfig bases
     eslint-config/          shared lint rules incl. dependency boundaries
   docs/
