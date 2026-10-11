@@ -20,6 +20,7 @@ import {
   deriveSessionKeys,
   type HandshakeCredentials,
   handshakeTranscript,
+  negotiateGroupKey,
   verifyPeerAuth,
 } from '../protocol/handshake';
 import { SecureChannel } from '../protocol/secure-channel';
@@ -46,6 +47,8 @@ export interface SessionDeps {
 
 export interface PeerSession {
   readonly peer: DeviceRecord;
+  /** Group key epoch this session was authenticated with (may be older than ours). */
+  readonly epoch: number;
   readonly remoteAddress: string;
   readonly isClosed: boolean;
   send(body: Body): void;
@@ -68,6 +71,7 @@ export function establishSession(
     const ownHello = createHello(credentials, role, deps.random);
     let peerHello: HelloFrame | null = null;
     let transcript: Uint8Array | null = null;
+    let negotiated: { readonly epoch: number; readonly key: Uint8Array } | null = null;
     let settled = false;
     const subscriptions: Unsubscribe[] = [];
 
@@ -114,21 +118,31 @@ export function establishSession(
             }
             peerHello = frame;
             if (role === 'responder') connection.send(encodeFrame(ownHello));
+            negotiated = negotiateGroupKey(credentials.keys, frame.epoch);
+            if (!negotiated) {
+              fail(
+                appError('AUTH_FAILED', `no key for epoch ${frame.epoch}`, {
+                  peerId: frame.deviceId,
+                  reason: 'epoch-mismatch',
+                }),
+                'AUTH_FAILED',
+              );
+              return;
+            }
             transcript =
               role === 'initiator'
                 ? handshakeTranscript(ownHello, frame)
                 : handshakeTranscript(frame, ownHello);
-            connection.send(encodeFrame(createAuth(credentials, role, transcript)));
+            connection.send(encodeFrame(createAuth(credentials, role, transcript, negotiated.key)));
             return;
           }
           case 'AUTH': {
-            if (!peerHello || !transcript) {
+            if (!peerHello || !transcript || !negotiated) {
               fail(protocolError('AUTH before HELLO'), 'PROTOCOL_ERROR');
               return;
             }
             const verified = verifyPeerAuth({
-              groupKey: credentials.groupKey,
-              epoch: credentials.epoch,
+              groupKey: negotiated.key,
               membership: context.membership(),
               transcript,
               peerHello,
@@ -138,13 +152,19 @@ export function establishSession(
               fail(verified.error, 'AUTH_FAILED');
               return;
             }
-            const keys = deriveSessionKeys(credentials.groupKey, transcript, role);
-            const session = new EstablishedSession(connection, verified.value, keys, deps);
+            const keys = deriveSessionKeys(negotiated.key, transcript, role);
+            const session = new EstablishedSession(
+              connection,
+              verified.value,
+              negotiated.epoch,
+              keys,
+              deps,
+            );
             finish(ok(session));
             return;
           }
-          case 'SEC':
-            fail(protocolError('encrypted frame before handshake'), 'PROTOCOL_ERROR');
+          default:
+            fail(protocolError(`unexpected ${frame.t} during handshake`), 'PROTOCOL_ERROR');
             return;
         }
       }),
@@ -166,6 +186,7 @@ class EstablishedSession implements PeerSession {
   constructor(
     private readonly connection: TransportConnection,
     readonly peer: DeviceRecord,
+    readonly epoch: number,
     keys: ReturnType<typeof deriveSessionKeys>,
     private readonly deps: SessionDeps,
   ) {

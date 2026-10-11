@@ -74,11 +74,70 @@ export const secureFrameSchema = z.object({
   c: base64(Number.MAX_SAFE_INTEGER),
 });
 
+// ------------------------------------------------------------- pairing frames
+// Plain JSON before the joiner is a member (docs/PLAN.md §8.2). Anything secret
+// travels in `c`, encrypted with the pairing key.
+
+export const pairHelloFrameSchema = z.object({
+  v: version,
+  t: z.literal('PAIR_HELLO'),
+  method: z.enum(['code', 'qr']),
+  ephPublicKey: key32,
+  nonce: key32,
+});
+
+export const pairChallengeFrameSchema = z.object({
+  v: version,
+  t: z.literal('PAIR_CHALLENGE'),
+  ephPublicKey: key32,
+  nonce: key32,
+  hostDeviceId: deviceId,
+  hostSignPublicKey: key32,
+});
+
+export const pairProofFrameSchema = z.object({
+  v: version,
+  t: z.literal('PAIR_PROOF'),
+  mac: key32,
+  n: nonce24,
+  c: base64(4096),
+});
+
+export const pairPendingFrameSchema = z.object({ v: version, t: z.literal('PAIR_PENDING') });
+
+export const pairAcceptFrameSchema = z.object({
+  v: version,
+  t: z.literal('PAIR_ACCEPT'),
+  mac: key32,
+  n: nonce24,
+  c: base64(256 * 1024),
+});
+
+export const PAIR_ERROR_CODES = [
+  'PAIRING_EXPIRED',
+  'PAIRING_REJECTED',
+  'PAIRING_CODE_INVALID',
+  'PROTOCOL_ERROR',
+] as const;
+
+export const pairErrorFrameSchema = z.object({
+  v: version,
+  t: z.literal('PAIR_ERROR'),
+  code: z.enum(PAIR_ERROR_CODES),
+  attemptsLeft: z.number().int().min(0),
+});
+
 export const plainFrameSchema = z.discriminatedUnion('t', [
   helloFrameSchema,
   authFrameSchema,
   errorFrameSchema,
   secureFrameSchema,
+  pairHelloFrameSchema,
+  pairChallengeFrameSchema,
+  pairProofFrameSchema,
+  pairPendingFrameSchema,
+  pairAcceptFrameSchema,
+  pairErrorFrameSchema,
 ]);
 
 export type HelloFrame = z.infer<typeof helloFrameSchema>;
@@ -87,6 +146,12 @@ export type ErrorFrame = z.infer<typeof errorFrameSchema>;
 export type SecureFrame = z.infer<typeof secureFrameSchema>;
 export type PlainFrame = z.infer<typeof plainFrameSchema>;
 export type HandshakeRole = HelloFrame['role'];
+export type PairHelloFrame = z.infer<typeof pairHelloFrameSchema>;
+export type PairChallengeFrame = z.infer<typeof pairChallengeFrameSchema>;
+export type PairProofFrame = z.infer<typeof pairProofFrameSchema>;
+export type PairAcceptFrame = z.infer<typeof pairAcceptFrameSchema>;
+export type PairErrorFrame = z.infer<typeof pairErrorFrameSchema>;
+export type PairingMethod = PairHelloFrame['method'];
 
 // ---------------------------------------------------------- encrypted bodies
 
@@ -137,16 +202,44 @@ export const wireMembershipSchema = z.object({
 
 export const MAX_HISTORY_CLIPS = 50;
 
+export const sealedKeySchema = z.object({
+  deviceId,
+  /** Ephemeral X25519 public key of the sealed box. */
+  e: key32,
+  n: nonce24,
+  c: base64(base64Chars(32 + 16)),
+});
+
 export const bodySchema = z.discriminatedUnion('t', [
   z.object({ t: z.literal('CLIP'), clip: wireClipSchema }),
   z.object({ t: z.literal('ACK'), clipId }),
   z.object({ t: z.literal('HISTORY_REQ'), since: timestamp }),
   z.object({ t: z.literal('HISTORY_RES'), clips: z.array(wireClipSchema).max(MAX_HISTORY_CLIPS) }),
   z.object({ t: z.literal('MEMBERSHIP'), membership: wireMembershipSchema }),
+  z.object({
+    t: z.literal('KEY_ROTATE'),
+    groupId: z.string().min(1).max(64),
+    epoch: z.number().int().min(2),
+    sealed: z.array(sealedKeySchema).min(1).max(MAX_GROUP_MEMBERS),
+  }),
   z.object({ t: z.literal('PING'), ts: timestamp }),
   z.object({ t: z.literal('PONG'), ts: timestamp }),
 ]);
 
+/** Encrypted inside PAIR_PROOF: who wants to join, signed with its identity key. */
+export const pairingProofPayloadSchema = z.object({ device: wireDeviceSchema, sig: signature64 });
+
+/** Encrypted inside PAIR_ACCEPT: everything the joiner needs to become a member. */
+export const pairingAcceptPayloadSchema = z.object({
+  groupId: z.string().min(1).max(64),
+  groupKey: key32,
+  epoch: z.number().int().min(1),
+  membership: wireMembershipSchema,
+});
+
+export type SealedKey = z.infer<typeof sealedKeySchema>;
+export type PairingProofPayload = z.infer<typeof pairingProofPayloadSchema>;
+export type PairingAcceptPayload = z.infer<typeof pairingAcceptPayloadSchema>;
 export type WireClip = z.infer<typeof wireClipSchema>;
 export type WireDevice = z.infer<typeof wireDeviceSchema>;
 export type WireMembership = z.infer<typeof wireMembershipSchema>;

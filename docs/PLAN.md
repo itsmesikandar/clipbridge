@@ -222,10 +222,10 @@ apps/mobile/
 - TXT record (public on the LAN, so minimal):
   - `v` — protocol version
   - `did` — device id (random, not a name)
-  - `gt` — group tag = first 8 bytes of `HMAC(groupKey, "group-tag")`. Lets a device ignore other groups without revealing anything.
+  - `gt` — group tag = first 8 bytes of `HMAC(groupId, "group-tag")`. Lets a device ignore other groups. Derived from the (secret, random) group id rather than the key so it survives key rotation.
   - `pm` — `1` when the device is in pairing mode.
 - Device **names are never broadcast**; names are exchanged only after authentication.
-- Fallback when mDNS is blocked: each device remembers the **last known IP:port** of every peer and tries it directly. Users can also add a peer by IP from the diagnostics screen.
+- Fallback when mDNS is blocked: each device remembers the **last known IP:port** of every peer and tries it directly. When joining, the user can type the host's address shown under the pairing code.
 
 ### 6.2 Topology
 
@@ -308,32 +308,46 @@ Encrypted bodies: `CLIP { clip }`, `ACK { clipId }`, `HISTORY_REQ { since }`, `H
 
 ### 8.2 Pairing
 
-**Phone joins (QR):**
+1. User clicks **Add device** on a computer that is already in the group. It enters pairing mode for 2 minutes, advertises `pm=1`, and shows:
+   - a **QR code** for phones: `clipbridge://pair?v=1&h=<ip>&p=<port>&t=<32-byte token>&k=<host signing key>`;
+   - a **12-character code** for computers (`K7QM-2XPA-9FRT`, Crockford base32, 60 bits) and the host address for manual entry.
+2. The joiner connects (the host's listener routes `PAIR_*` frames to pairing, `HELLO` to normal sessions):
 
-1. User clicks **Add device** on a desktop. Desktop enters pairing mode for 2 minutes and shows a QR containing: host address(es) + port, host identity public key, a one-time 32-byte pairing token.
-2. Phone scans, connects, performs an ephemeral X25519 key exchange, proves it knows the token (`HMAC(token, transcript)`).
-3. Desktop shows **"Allow 'Pixel 8' to join?"** → user clicks **Allow**.
-4. Desktop sends the group key + member list, encrypted with the pairing session key. Phone's identity key is added to the member list; the updated list is broadcast to the group.
+```
+joiner → PAIR_HELLO     { method: code|qr, ephemeral X25519 key, nonce }
+host   → PAIR_CHALLENGE { ephemeral key, nonce, host id, host signing key }
+         transcript = SHA-256(label ‖ all fields above)
+         key        = HKDF(ECDH ‖ secret, salt = transcript)        secret = code or QR token
+joiner → PAIR_PROOF     { HMAC(secret, "joiner" ‖ transcript), AEAD(key, { device record, Ed25519 sig over transcript }) }
+host   → PAIR_PENDING   (shows "Allow 'Pixel 8' to join? Only allow devices you own.")
+host   → PAIR_ACCEPT    { HMAC(secret, "host" ‖ transcript), AEAD(key, { group id, group key, epoch, signed member list }) }
+         or PAIR_ERROR  { PAIRING_CODE_INVALID (attempts left) | PAIRING_REJECTED | PAIRING_EXPIRED }
+```
 
-**Laptop joins (code):** same flow, but the host shows a 12-character code (`K7QM-2XPA-9FRT`, ~60 bits) instead of a QR; the joiner finds the host via mDNS (`pm=1`) and types the code. 3 wrong attempts cancel the session.
+3. The host checks the joiner's device id matches its key and the signature. The joiner checks the host proof, that the member list is signed by the host it talked to, and that it contains itself. With QR, the host key must equal the one in the QR (no impostor host).
+4. On **Allow**, the host adds the device to a new signed member list and broadcasts it; other members learn about the new device automatically.
 
-**Any member can add devices.** Pairing tokens are single-use and expire after 2 minutes.
+**Limits:** single-use codes, 2-minute expiry, 3 wrong codes cancel the session, one joiner at a time. **Any computer in the group can add devices**; phones cannot host pairing.
+
+**Known limitation:** the 60-bit code is protected by an HMAC, so an attacker who actively intercepts the pairing exchange could try codes offline. This needs an active man-in-the-middle on the LAN during the 2-minute window and a large computation; a PAKE (SPAKE2/CPace) is on the post-MVP list. QR pairing uses a 256-bit token and is not affected.
 
 ### 8.3 Connection authentication
 
-1. The dialer (initiator) sends `HELLO`; the responder answers with its own `HELLO`. Each contains a fresh 32-byte nonce, the device id, signing public key and key epoch.
+1. The dialer (initiator) sends `HELLO`; the responder answers with its own `HELLO`. Each contains a fresh 32-byte nonce, the device id, signing public key and current key epoch. Both use the key of the **lower** epoch (each device keeps its 3 previous keys), so a device that missed a rotation can still connect and catch up.
 2. Both compute `transcript = SHA-256(label ‖ both HELLOs' fields, length-prefixed, initiator first)`.
 3. Each side sends `AUTH = { mac: HMAC(groupKey, label ‖ role ‖ transcript), sig: Ed25519(label ‖ role ‖ transcript) }`.
-4. Each side checks: same epoch; device id = hash of the signing key; device is in the current signed member list with that key; MAC valid (holds the group key); signature valid. Otherwise `ERROR AUTH_FAILED` and close.
+4. Each side checks: device id = hash of the signing key; device is in the current signed member list with that key; MAC valid (holds the group key); signature valid. Otherwise `ERROR AUTH_FAILED` and close.
 5. Both derive two keys (initiator→responder, responder→initiator) with HKDF over the group key and transcript, so frames cannot be reflected back.
 6. Heartbeat: `PING` every 15 s; the connection is dropped after 35 s of silence.
 
 ### 8.4 Unpair and key rotation
 
-1. User removes a device from any member.
-2. That member creates a new group key (`epoch + 1`), seals it separately to each remaining member's X25519 key, broadcasts a signed `MEMBERSHIP` (without the removed device) and `KEY_ROTATE`.
-3. The removed device cannot decrypt the new key and is rejected at handshake (not a member).
-4. Members that were offline: on reconnect at an old epoch, a current member re-sends their sealed key before normal sync.
+1. User removes a device on any member.
+2. That member signs a new member list without the device, creates a new group key (`epoch + 1`) and seals it separately to each remaining member's X25519 key (`KEY_ROTATE`).
+3. It sends `MEMBERSHIP` to everyone (the removed device learns it was removed and stops), then `KEY_ROTATE` to the remaining members, who forward it.
+4. After 0.5 s every device closes its sessions and reconnects with the new key, so sessions keyed with the old (now known to the removed device) key do not survive.
+5. The removed device is rejected at handshake (not in the member list), even with an old key. If it restarts later, its saved list no longer contains it and it stays offline, offering "Set up again".
+6. A member that was off during the rotation connects with the old epoch; the current member hands it the new key (sealed to it) and both reconnect with the new key.
 
 ### 8.5 Data handling
 

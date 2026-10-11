@@ -7,6 +7,7 @@ import { MemoryLogger } from '../testing/fakes';
 import { createTestGroup, createTestMember, type TestMember } from '../testing/fixtures';
 import { InMemoryNetwork } from '../testing/in-memory-network';
 import { SeededRandom } from '../testing/seeded-random';
+import { GroupKeys } from './group-keys';
 import {
   establishSession,
   type PeerSession,
@@ -29,8 +30,7 @@ function context(member: TestMember, groupKey = group.groupKey): SessionContext 
     credentials: {
       deviceId: member.device.id,
       identity: member.identity,
-      groupKey,
-      epoch: group.epoch,
+      keys: new GroupKeys({ epoch: group.epoch, key: groupKey }),
     },
     membership: () => group.membership,
   };

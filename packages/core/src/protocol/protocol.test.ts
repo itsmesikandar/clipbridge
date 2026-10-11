@@ -10,8 +10,10 @@ import {
   createAuth,
   createHello,
   deriveSessionKeys,
+  type GroupKeyRing,
   type HandshakeCredentials,
   handshakeTranscript,
+  negotiateGroupKey,
   verifyPeerAuth,
 } from './handshake';
 import { SecureChannel } from './secure-channel';
@@ -34,17 +36,15 @@ const group = createTestGroup(
 );
 const [laptop, phone] = group.members as [(typeof group.members)[0], (typeof group.members)[0]];
 
+function ring(key: Uint8Array = group.groupKey, epoch = group.epoch): GroupKeyRing {
+  return { epoch, keyFor: (requested) => (requested === epoch ? key : null) };
+}
+
 function credentials(
   member = laptop,
   overrides: Partial<HandshakeCredentials> = {},
 ): HandshakeCredentials {
-  return {
-    deviceId: member.device.id,
-    identity: member.identity,
-    groupKey: group.groupKey,
-    epoch: group.epoch,
-    ...overrides,
-  };
+  return { deviceId: member.device.id, identity: member.identity, keys: ring(), ...overrides };
 }
 
 describe('codec', () => {
@@ -160,19 +160,17 @@ describe('handshake', () => {
 
     const verifiedByA = verifyPeerAuth({
       groupKey: group.groupKey,
-      epoch: 1,
       membership: group.membership,
       transcript,
       peerHello: responderHello,
-      peerAuth: createAuth(b, 'responder', transcript),
+      peerAuth: createAuth(b, 'responder', transcript, group.groupKey),
     });
     const verifiedByB = verifyPeerAuth({
       groupKey: group.groupKey,
-      epoch: 1,
       membership: group.membership,
       transcript,
       peerHello: initiatorHello,
-      peerAuth: createAuth(a, 'initiator', transcript),
+      peerAuth: createAuth(a, 'initiator', transcript, group.groupKey),
     });
     expect(verifiedByA.ok && verifiedByA.value.id).toBe(phone.device.id);
     expect(verifiedByB.ok && verifiedByB.value.id).toBe(laptop.device.id);
@@ -192,21 +190,24 @@ describe('handshake', () => {
     const peerHello = { ...responderHello, ...tweak.hello };
     return verifyPeerAuth({
       groupKey: group.groupKey,
-      epoch: 1,
       membership: group.membership,
       transcript,
       peerHello,
-      peerAuth: createAuth(responder, 'responder', transcript),
+      peerAuth: createAuth(
+        responder,
+        'responder',
+        transcript,
+        responder.keys.keyFor(1) ?? new Uint8Array(32),
+      ),
     });
   }
 
   it.each([
     [
       'wrong group key',
-      () => verifyFrom(credentials(phone, { groupKey: random.randomBytes(32) })),
+      () => verifyFrom(credentials(phone, { keys: ring(random.randomBytes(32)) })),
       'bad-mac',
     ],
-    ['old key epoch', () => verifyFrom(credentials(phone, { epoch: 2 })), 'epoch-mismatch'],
     [
       'device not in member list',
       () => {
@@ -236,6 +237,20 @@ describe('handshake', () => {
     if (!result.ok) expect(result.error.details.reason).toBe(reason);
   });
 
+  it('negotiates the lower epoch when both sides still have that key', () => {
+    const key1 = random.randomBytes(32);
+    const key2 = random.randomBytes(32);
+    const key3 = random.randomBytes(32);
+    const keys: GroupKeyRing = {
+      epoch: 3,
+      keyFor: (epoch) => ({ 1: null, 2: key2, 3: key3 })[epoch] ?? null,
+    };
+    expect(negotiateGroupKey(keys, 5)).toEqual({ epoch: 3, key: key3 });
+    expect(negotiateGroupKey(keys, 2)).toEqual({ epoch: 2, key: key2 });
+    expect(negotiateGroupKey(keys, 1)).toBeNull();
+    expect(key1).toHaveLength(32);
+  });
+
   it('rejects a signature from the wrong identity', () => {
     const b = credentials(phone);
     const { responderHello, transcript } = runHandshake(credentials(laptop), b);
@@ -243,10 +258,10 @@ describe('handshake', () => {
       { ...b, identity: createTestMember({ name: 'x', platform: 'ios' }, random).identity },
       'responder',
       transcript,
+      group.groupKey,
     );
     const result = verifyPeerAuth({
       groupKey: group.groupKey,
-      epoch: 1,
       membership: group.membership,
       transcript,
       peerHello: responderHello,
@@ -261,11 +276,10 @@ describe('handshake', () => {
     const second = runHandshake(credentials(laptop), b);
     const result = verifyPeerAuth({
       groupKey: group.groupKey,
-      epoch: 1,
       membership: group.membership,
       transcript: second.transcript,
       peerHello: second.responderHello,
-      peerAuth: createAuth(b, 'responder', first.transcript),
+      peerAuth: createAuth(b, 'responder', first.transcript, group.groupKey),
     });
     expect(!result.ok && result.error.details.reason).toBe('bad-mac');
   });

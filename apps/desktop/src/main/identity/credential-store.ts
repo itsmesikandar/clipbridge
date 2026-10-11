@@ -3,10 +3,11 @@ import {
   deviceIdFromSignPublicKey,
   type DevicePlatform,
   type DeviceRecord,
+  type EpochKey,
   type GroupCredentials,
   identityFromSeeds,
   type LocalDevice,
-  type Membership,
+  MAX_PREVIOUS_KEYS,
   parseMembership,
   type RandomPort,
   type SecureStoragePort,
@@ -17,26 +18,21 @@ import { z } from 'zod';
 const KEYS = {
   identity: 'identity',
   groupKey: 'group-key',
+  previousKeys: 'previous-keys',
   device: 'device',
   group: 'group',
 } as const;
 
 const SECRET_KEY_BYTES = 32;
+/** One stored previous key: 4-byte big-endian epoch + 32-byte key. */
+const EPOCH_KEY_BYTES = 4 + SECRET_KEY_BYTES;
 
 const storedDeviceSchema = z.object({ name: z.string().min(1).max(64), addedAt: z.number().int() });
-const storedGroupSchema = z.object({
-  groupId: z.string().min(1),
-  epoch: z.number().int().min(1),
-  membership: z.unknown(),
-});
-
-export interface StoredGroup extends GroupCredentials {
-  readonly groupId: string;
-}
+const storedGroupSchema = z.object({ epoch: z.number().int().min(1), membership: z.unknown() });
 
 /**
- * Persists this device's identity and group membership.
- * Secrets (identity keys, group key) go to OS-encrypted storage; the rest is plain JSON.
+ * Persists this device's identity and group credentials.
+ * Secrets (identity keys, group keys) go to OS-encrypted storage; the rest is plain JSON.
  */
 export class CredentialStore {
   constructor(
@@ -76,36 +72,58 @@ export class CredentialStore {
     return { device, identity };
   }
 
+  /** Remembers this device's own name (shown to other devices when it pairs). */
+  async saveDeviceName(name: string, addedAt: number): Promise<void> {
+    await this.storage.set(KEYS.device, { name, addedAt });
+  }
+
   /** Returns the saved group, or null if this device is not paired (or the data is damaged). */
-  async loadGroup(): Promise<StoredGroup | null> {
+  async loadGroup(): Promise<GroupCredentials | null> {
     const stored = storedGroupSchema.safeParse(await this.storage.get(KEYS.group));
     const groupKey = await this.secure.get(KEYS.groupKey);
     if (!stored.success || groupKey?.length !== SECRET_KEY_BYTES) return null;
     const membership = parseMembership(stored.data.membership);
     if (!membership.ok) return null;
-    return {
-      groupId: stored.data.groupId,
-      epoch: stored.data.epoch,
-      groupKey,
-      membership: membership.value,
-    };
+    const previousKeys = decodeEpochKeys(
+      (await this.secure.get(KEYS.previousKeys)) ?? new Uint8Array(0),
+    );
+    return { epoch: stored.data.epoch, groupKey, membership: membership.value, previousKeys };
   }
 
-  async saveGroup(group: StoredGroup): Promise<void> {
+  async saveGroup(group: GroupCredentials): Promise<void> {
     await this.secure.set(KEYS.groupKey, group.groupKey);
-    await this.storage.set(KEYS.group, {
-      groupId: group.groupId,
-      epoch: group.epoch,
-      membership: group.membership,
-    });
-  }
-
-  async saveMembership(groupId: string, epoch: number, membership: Membership): Promise<void> {
-    await this.storage.set(KEYS.group, { groupId, epoch, membership });
+    await this.secure.set(KEYS.previousKeys, encodeEpochKeys(group.previousKeys ?? []));
+    await this.storage.set(KEYS.group, { epoch: group.epoch, membership: group.membership });
   }
 
   async clearGroup(): Promise<void> {
     await this.storage.delete(KEYS.group);
     await this.secure.delete(KEYS.groupKey);
+    await this.secure.delete(KEYS.previousKeys);
   }
+}
+
+export function encodeEpochKeys(keys: readonly EpochKey[]): Uint8Array {
+  const kept = keys.slice(0, MAX_PREVIOUS_KEYS);
+  const out = new Uint8Array(kept.length * EPOCH_KEY_BYTES);
+  const view = new DataView(out.buffer);
+  kept.forEach((entry, index) => {
+    const offset = index * EPOCH_KEY_BYTES;
+    view.setUint32(offset, entry.epoch);
+    out.set(entry.key, offset + 4);
+  });
+  return out;
+}
+
+export function decodeEpochKeys(bytes: Uint8Array): EpochKey[] {
+  if (bytes.length % EPOCH_KEY_BYTES !== 0) return [];
+  const keys: EpochKey[] = [];
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  for (let offset = 0; offset < bytes.length; offset += EPOCH_KEY_BYTES) {
+    keys.push({
+      epoch: view.getUint32(offset),
+      key: bytes.slice(offset + 4, offset + EPOCH_KEY_BYTES),
+    });
+  }
+  return keys;
 }

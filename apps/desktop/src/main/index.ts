@@ -4,7 +4,7 @@ import { app, BrowserWindow, powerMonitor, type Tray } from 'electron';
 
 import { type Container, createContainer } from './container';
 import { registerAppInfoHandlers } from './ipc/register-app-info-handlers';
-import { registerDevHandlers } from './ipc/register-dev-handlers';
+import { registerPairingHandlers } from './ipc/register-pairing-handlers';
 import { registerStateHandlers } from './ipc/register-state-handlers';
 import { createTray } from './tray';
 import { createMainWindow } from './window';
@@ -76,12 +76,12 @@ function watchNetwork(container: Container): void {
 }
 
 async function start(): Promise<void> {
-  const container = createContainer({ devMode, profile });
+  const container = createContainer({ devMode, profile, showWindow: showMainWindow });
   state.container = container;
 
   registerAppInfoHandlers();
   registerStateHandlers(container.controller, () => BrowserWindow.getAllWindows());
-  registerDevHandlers(container.controller);
+  registerPairingHandlers(container.controller);
 
   await container.controller.init();
   watchNetwork(container);

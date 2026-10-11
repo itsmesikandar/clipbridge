@@ -4,7 +4,7 @@ import { bytesToHex, hexToBytes } from '../lib/bytes';
 import { utf8Encode } from '../lib/utf8';
 import { SeededRandom } from '../testing/seeded-random';
 import { computeContentHash } from './content-hash';
-import { generateGroupKey, groupTag } from './group-key';
+import { generateGroupId, generateGroupKey, groupTag } from './group-key';
 import {
   deviceIdFromSignPublicKey,
   generateIdentity,
@@ -149,9 +149,11 @@ describe('sealed box', () => {
 });
 
 describe('group key and content hash', () => {
-  it('derives a short public tag that differs per key', () => {
-    const a = generateGroupKey(random);
-    const b = generateGroupKey(random);
+  it('derives a short public tag per group id', () => {
+    expect(generateGroupKey(random)).toHaveLength(32);
+    const a = generateGroupId(random);
+    const b = generateGroupId(random);
+    expect(a).toMatch(/^grp_[0-9a-f]{16}$/);
     expect(groupTag(a)).toMatch(/^[0-9a-f]{16}$/);
     expect(groupTag(a)).toBe(groupTag(a));
     expect(groupTag(a)).not.toBe(groupTag(b));

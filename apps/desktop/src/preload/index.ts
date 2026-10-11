@@ -22,12 +22,21 @@ const api: ClipBridgeApi = {
   copyHistoryItem: (id) => ipcRenderer.invoke(IPC_CHANNELS.copyHistoryItem, id),
   clearHistory: () => ipcRenderer.invoke(IPC_CHANNELS.clearHistory),
   getDiagnostics: () => ipcRenderer.invoke(IPC_CHANNELS.getDiagnostics),
-  dev: {
-    createGroup: () => ipcRenderer.invoke(IPC_CHANNELS.devCreateGroup),
-    exportInvite: () => ipcRenderer.invoke(IPC_CHANNELS.devExportInvite),
-    importInvite: (invite) => ipcRenderer.invoke(IPC_CHANNELS.devImportInvite, invite),
-    importReply: (reply) => ipcRenderer.invoke(IPC_CHANNELS.devImportReply, reply),
-    leaveGroup: () => ipcRenderer.invoke(IPC_CHANNELS.devLeaveGroup),
+  pairing: {
+    createGroup: () => ipcRenderer.invoke(IPC_CHANNELS.createGroup),
+    startHosting: () => ipcRenderer.invoke(IPC_CHANNELS.startHosting),
+    stopHosting: () => ipcRenderer.invoke(IPC_CHANNELS.stopHosting),
+    approveJoin: () => ipcRenderer.invoke(IPC_CHANNELS.approveJoin),
+    denyJoin: () => ipcRenderer.invoke(IPC_CHANNELS.denyJoin),
+    startJoinSearch: () => ipcRenderer.invoke(IPC_CHANNELS.startJoinSearch),
+    stopJoinSearch: () => ipcRenderer.invoke(IPC_CHANNELS.stopJoinSearch),
+    join: (input) => ipcRenderer.invoke(IPC_CHANNELS.join, input),
+    cancelJoin: () => ipcRenderer.invoke(IPC_CHANNELS.cancelJoin),
+  },
+  devices: {
+    rename: (id, name) => ipcRenderer.invoke(IPC_CHANNELS.renameDevice, id, name),
+    remove: (id) => ipcRenderer.invoke(IPC_CHANNELS.removeDevice, id),
+    resetThisDevice: () => ipcRenderer.invoke(IPC_CHANNELS.resetThisDevice),
   },
 };
 

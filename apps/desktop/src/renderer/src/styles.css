@@ -318,3 +318,103 @@ h3 {
 .about--error {
   color: var(--error);
 }
+
+/* Inputs */
+input,
+select {
+  font: inherit;
+  padding: 6px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+}
+
+.code-input {
+  font:
+    600 18px ui-monospace,
+    monospace;
+  letter-spacing: 2px;
+  text-transform: uppercase;
+}
+
+.field__row {
+  display: flex;
+  gap: 8px;
+}
+
+.field__row input {
+  flex: 1;
+}
+
+.small {
+  font-size: 12px;
+}
+
+.link {
+  align-self: flex-start;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--accent);
+  font: inherit;
+  cursor: pointer;
+}
+
+.button--danger {
+  color: var(--error);
+  border-color: var(--error);
+}
+
+.list__actions {
+  display: flex;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+/* Add-device dialog */
+.overlay {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  background: rgb(0 0 0 / 45%);
+}
+
+.dialog {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  max-width: 360px;
+  padding: 20px;
+  border-radius: 12px;
+  background: var(--card);
+  text-align: center;
+}
+
+.dialog h2 {
+  font-size: 16px;
+}
+
+.dialog p {
+  margin: 0;
+}
+
+.qr {
+  width: 200px;
+  height: 200px;
+  padding: 8px;
+  border-radius: 8px;
+  background: #fff;
+}
+
+.code {
+  font:
+    700 26px ui-monospace,
+    monospace;
+  letter-spacing: 3px;
+}

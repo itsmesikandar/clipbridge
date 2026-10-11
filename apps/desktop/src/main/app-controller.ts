@@ -1,8 +1,8 @@
 /**
  * Application layer of the desktop main process: owns the engine lifecycle,
- * persists identity/group/settings and turns engine state into the snapshot
- * the UI renders. Has no Electron imports, so it is tested with core's
- * in-memory network.
+ * pairing (host and join), group changes, persistence, and turns everything
+ * into the snapshot the UI renders. Has no Electron imports, so it is tested
+ * with core's in-memory network.
  */
 
 import {
@@ -11,14 +11,26 @@ import {
   CORE_VERSION,
   createEngine as createCoreEngine,
   type DevicePlatform,
+  type DiscoveredService,
   type Engine,
   type EnginePorts,
   findMember,
+  generateGroupId,
+  generateGroupKey,
+  type GroupCredentials,
   type HistoryEntry,
+  isDeviceId,
+  type JoinAttempt,
+  joinGroup,
   type LocalDevice,
   type LoggerPort,
+  normalizePairingCode,
+  type PairingHostSession,
+  pairingSecret,
+  type PeerAddress,
   PROTOCOL_VERSION,
   type ReadonlyStore,
+  signMembership,
   type StoragePort,
   type Unsubscribe,
 } from '@clipbridge/core';
@@ -28,16 +40,19 @@ import type {
   AppSnapshot,
   DiagnosticsView,
   HistoryItemView,
+  HostingView,
   IpcResult,
+  JoiningView,
+  JoinRequestInput,
   SettingsPatch,
   SettingsView,
 } from '../shared/ipc-contract';
-import { acceptInvite, acceptReply, createDevGroup, encodeInvite } from './dev/dev-pairing';
-import type { CredentialStore, StoredGroup } from './identity/credential-store';
+import type { CredentialStore } from './identity/credential-store';
 import { createSimpleStore, type SimpleStore } from './simple-store';
 
 const SETTINGS_KEY = 'settings';
 const PREVIEW_LENGTH = 300;
+const DEFAULT_PORT = 47821;
 
 const DEFAULT_SETTINGS: SettingsView = {
   sendEnabled: true,
@@ -60,8 +75,17 @@ export interface AppControllerDeps {
   readonly defaultDeviceName: string;
   readonly appVersion: string;
   readonly logFile: string;
-  readonly devMode: boolean;
+  /** Renders a QR code (SVG markup) for the pairing link. */
+  readonly renderQr: (text: string) => Promise<string>;
+  /** Asks the user to look at the app (a device wants to join). */
+  readonly requestAttention?: (message: string) => void;
   readonly createEngine?: typeof createCoreEngine;
+}
+
+interface Hosting {
+  readonly session: PairingHostSession;
+  readonly qrSvg: string;
+  readonly unsubscribe: Unsubscribe;
 }
 
 const notPairedStatus: AppSnapshot['status'] = {
@@ -70,14 +94,25 @@ const notPairedStatus: AppSnapshot['status'] = {
   peerCount: 0,
   issue: null,
 };
+const idleJoin: JoiningView = { searching: false, hosts: [], state: 'idle', error: null };
+const done: IpcResult<void> = { ok: true, value: undefined };
+
+function fail(message: string, issue?: AppError): { ok: false; message: string; issue?: AppError } {
+  return issue ? { ok: false, message, issue } : { ok: false, message };
+}
 
 export class AppController {
   private self: LocalDevice | null = null;
-  private group: StoredGroup | null = null;
+  private group: GroupCredentials | null = null;
   private engine: Engine | null = null;
   private settings: SettingsView = DEFAULT_SETTINGS;
   private startError: AppError | null = null;
   private engineSubscriptions: Unsubscribe[] = [];
+  private hosting: Hosting | null = null;
+  private stopSearch: Unsubscribe | null = null;
+  private readonly pairingHosts = new Map<string, DiscoveredService>();
+  private joinAttempt: JoinAttempt | null = null;
+  private joinView: JoiningView = idleJoin;
   private readonly store: SimpleStore<AppSnapshot>;
 
   constructor(private readonly deps: AppControllerDeps) {
@@ -106,6 +141,8 @@ export class AppController {
   }
 
   async shutdown(): Promise<void> {
+    this.stopJoinSearch();
+    this.joinAttempt?.cancel();
     await this.stopEngine();
   }
 
@@ -118,11 +155,9 @@ export class AppController {
 
   async copyHistoryItem(id: string): Promise<IpcResult<void>> {
     const entry = this.engine?.history.get().find((candidate) => candidate.clip.id === id);
-    if (!entry) return { ok: false, message: 'This item is no longer in the history.' };
+    if (!entry) return fail('This item is no longer in the history.');
     const written = await this.deps.ports.clipboard.write(entry.clip.content);
-    return written.ok
-      ? { ok: true, value: undefined }
-      : { ok: false, message: written.error.message };
+    return written.ok ? done : fail(written.error.message, written.error);
   }
 
   clearHistory(): void {
@@ -133,7 +168,7 @@ export class AppController {
     const self = this.requireSelf();
     return {
       deviceId: self.device.id,
-      deviceName: self.device.name,
+      deviceName: this.selfName(),
       platform: self.device.platform,
       appVersion: this.deps.appVersion,
       coreVersion: CORE_VERSION,
@@ -145,64 +180,209 @@ export class AppController {
     };
   }
 
-  // ------------------------------------------------------------------ dev pairing (M2 only)
+  // ------------------------------------------------------------------ group setup
 
-  readonly dev = {
-    createGroup: async (): Promise<IpcResult<void>> => {
-      const guard = this.devGuard(false);
-      if (guard) return guard;
-      await this.adoptGroup(
-        createDevGroup(this.requireSelf(), this.deps.ports.random, this.deps.ports.clock.now()),
-      );
-      return { ok: true, value: undefined };
-    },
-    exportInvite: (): Promise<IpcResult<string>> => {
-      const guard = this.devGuard(true);
-      if (guard) return Promise.resolve(guard);
-      return Promise.resolve({ ok: true, value: encodeInvite(this.requireGroup()) });
-    },
-    importInvite: async (text: string): Promise<IpcResult<string>> => {
-      const guard = this.devGuard(false);
-      if (guard) return guard;
-      const accepted = acceptInvite(text, this.requireSelf(), this.deps.ports.clock.now());
-      if (!accepted.ok) return { ok: false, message: accepted.error };
-      await this.adoptGroup(accepted.value.group);
-      return { ok: true, value: accepted.value.reply };
-    },
-    importReply: async (text: string): Promise<IpcResult<void>> => {
-      const guard = this.devGuard(true);
-      if (guard) return guard;
-      const accepted = acceptReply(
-        text,
-        this.requireGroup(),
-        this.requireSelf(),
-        this.deps.ports.clock.now(),
-      );
-      if (!accepted.ok) return { ok: false, message: accepted.error };
-      await this.adoptGroup(accepted.value);
-      return { ok: true, value: undefined };
-    },
-    leaveGroup: async (): Promise<IpcResult<void>> => {
-      if (!this.deps.devMode) return { ok: false, message: 'Not available.' };
-      await this.stopEngine();
-      await this.deps.credentials.clearGroup();
-      this.group = null;
+  /** Starts a new group with only this computer in it. */
+  async createGroup(): Promise<IpcResult<void>> {
+    if (this.group) return fail('This computer is already in a group.');
+    const self = this.requireSelf();
+    const { random, clock } = this.deps.ports;
+    const membership = signMembership(
+      {
+        groupId: generateGroupId(random),
+        version: 1,
+        members: [self.device],
+        updatedBy: self.device.id,
+        updatedAt: clock.now(),
+      },
+      self.identity,
+    );
+    await this.adoptGroup({
+      groupKey: generateGroupKey(random),
+      epoch: 1,
+      membership,
+      previousKeys: [],
+    });
+    return done;
+  }
+
+  // ------------------------------------------------------------------ hosting ("Add device")
+
+  async startHosting(): Promise<IpcResult<void>> {
+    if (!this.engine) return fail('Create or join a group first.');
+    if (this.hosting?.session.isActive) return done;
+    const started = this.engine.startPairing();
+    if (!started.ok) return fail(started.error.message, started.error);
+    const session = started.value;
+    const qrSvg = await this.deps.renderQr(session.qrLink);
+    let lastKind = session.state.get().kind;
+    const unsubscribe = session.state.subscribe((state) => {
+      if (state.kind === 'awaiting-approval' && lastKind !== 'awaiting-approval') {
+        this.deps.requestAttention?.(`"${state.request.name}" wants to join your devices`);
+      }
+      lastKind = state.kind;
       this.publish();
-      return { ok: true, value: undefined };
-    },
-  };
+    });
+    this.hosting?.unsubscribe();
+    this.hosting = { session, qrSvg, unsubscribe };
+    this.publish();
+    return done;
+  }
+
+  stopHosting(): void {
+    const hosting = this.hosting;
+    if (!hosting) return;
+    hosting.session.cancel();
+    hosting.unsubscribe();
+    this.hosting = null;
+    this.publish();
+  }
+
+  approveJoin(): void {
+    this.hosting?.session.approve();
+  }
+
+  denyJoin(): void {
+    this.hosting?.session.deny();
+  }
+
+  // ------------------------------------------------------------------ joining
+
+  async startJoinSearch(): Promise<void> {
+    if (this.stopSearch || this.group) return;
+    const browsing = await this.deps.ports.discovery.browse({
+      onUp: (service) => {
+        if (!service.pairingMode) {
+          if (this.pairingHosts.delete(service.instanceId)) this.publishJoin();
+          return;
+        }
+        this.pairingHosts.set(service.instanceId, service);
+        this.publishJoin();
+      },
+      onDown: (instanceId) => {
+        if (this.pairingHosts.delete(instanceId)) this.publishJoin();
+      },
+    });
+    if (browsing.ok) this.stopSearch = browsing.value;
+    this.publishJoin();
+  }
+
+  stopJoinSearch(): void {
+    this.stopSearch?.();
+    this.stopSearch = null;
+    this.pairingHosts.clear();
+    this.publishJoin();
+  }
+
+  async join(input: JoinRequestInput): Promise<IpcResult<void>> {
+    if (this.group) return fail('This computer is already in a group.');
+    const code = normalizePairingCode(input.code);
+    if (!code) return fail('Check the code: it has 12 letters and numbers, like K7QM-2XPA-9FRT.');
+    const addresses = this.joinAddresses(input);
+    if (!addresses.ok) return addresses;
+
+    this.joinAttempt?.cancel();
+    const attempt = joinGroup(
+      {
+        self: this.requireSelf(),
+        addresses: addresses.value,
+        method: 'code',
+        secret: pairingSecret('code', code),
+      },
+      this.deps.ports,
+    );
+    this.joinAttempt = attempt;
+    const unsubscribe = attempt.state.subscribe((state) => {
+      this.joinView = {
+        ...this.joinView,
+        state: state.kind,
+        error: state.kind === 'failed' ? state.error : null,
+      };
+      this.publish();
+    });
+    this.joinView = { ...this.joinView, state: 'connecting', error: null };
+    this.publish();
+
+    const result = await attempt.result;
+    unsubscribe();
+    if (this.joinAttempt === attempt) this.joinAttempt = null;
+    if (!result.ok) {
+      this.joinView = { ...this.joinView, state: 'failed', error: result.error };
+      this.publish();
+      return fail(result.error.message, result.error);
+    }
+    this.stopJoinSearch();
+    this.joinView = { ...idleJoin, state: 'joined' };
+    await this.adoptGroup({ ...result.value, previousKeys: [] });
+    return done;
+  }
+
+  cancelJoin(): void {
+    this.joinAttempt?.cancel();
+    this.joinAttempt = null;
+    this.joinView = { ...this.joinView, state: 'idle', error: null };
+    this.publish();
+  }
+
+  // ------------------------------------------------------------------ devices
+
+  async renameDevice(id: string, name: string): Promise<IpcResult<void>> {
+    if (!this.engine || !isDeviceId(id)) return fail('Unknown device.');
+    const renamed = this.engine.renameMember(id, name);
+    if (!renamed.ok) return fail('Names must be 1–64 characters.', renamed.error);
+    const self = this.requireSelf();
+    if (id === self.device.id) {
+      await this.deps.credentials.saveDeviceName(name.trim(), self.device.addedAt);
+    }
+    return done;
+  }
+
+  removeDevice(id: string): IpcResult<void> {
+    if (!this.engine || !isDeviceId(id)) return fail('Unknown device.');
+    if (id === this.self?.device.id) {
+      return fail('Use "Reset this computer" to remove this computer.');
+    }
+    const removed = this.engine.removeMember(id);
+    return removed.ok ? done : fail(removed.error.message, removed.error);
+  }
+
+  /** Forgets the group on this computer. Other devices should remove it too. */
+  async resetThisDevice(): Promise<IpcResult<void>> {
+    this.stopHosting();
+    await this.stopEngine();
+    await this.deps.credentials.clearGroup();
+    this.group = null;
+    this.joinView = idleJoin;
+    this.publish();
+    return done;
+  }
 
   // ------------------------------------------------------------------ internals
 
-  private devGuard(mustBePaired: boolean): { ok: false; message: string } | null {
-    if (!this.deps.devMode) return { ok: false, message: 'Not available.' };
-    if (mustBePaired && !this.group) return { ok: false, message: 'Create or join a group first.' };
-    if (!mustBePaired && this.group)
-      return { ok: false, message: 'Leave the current group first.' };
-    return null;
+  private joinAddresses(input: JoinRequestInput): IpcResult<PeerAddress[]> {
+    if (input.hostId) {
+      const service = this.pairingHosts.get(input.hostId);
+      if (!service) return fail('That computer is no longer showing a code.');
+      return { ok: true, value: [...service.addresses] };
+    }
+    if (input.address) {
+      const match = /^(\d{1,3}(?:\.\d{1,3}){3})(?::(\d{1,5}))?$/.exec(input.address.trim());
+      if (!match?.[1]) return fail('Enter an address like 192.168.1.7 or 192.168.1.7:47821.');
+      return {
+        ok: true,
+        value: [{ host: match[1], port: match[2] ? Number(match[2]) : DEFAULT_PORT }],
+      };
+    }
+    const hosts = [...this.pairingHosts.values()];
+    if (hosts.length === 1 && hosts[0]) return { ok: true, value: [...hosts[0].addresses] };
+    return fail(
+      hosts.length === 0
+        ? 'No computer is showing a code on this network. Click "Add device" on a computer that is already set up.'
+        : 'Several computers are showing a code. Choose the one you want to join.',
+    );
   }
 
-  private async adoptGroup(group: StoredGroup): Promise<void> {
+  private async adoptGroup(group: GroupCredentials): Promise<void> {
     await this.deps.credentials.saveGroup(group);
     this.group = group;
     await this.stopEngine();
@@ -219,9 +399,10 @@ export class AppController {
       group,
       ports: this.deps.ports,
       settings: { ...this.settings, applyToClipboard: true },
-      onMembershipChanged: (membership) => {
-        this.group = { ...group, membership };
-        void this.deps.credentials.saveMembership(group.groupId, group.epoch, membership);
+      onGroupChanged: (next) => {
+        this.group = next;
+        void this.deps.credentials.saveGroup(next);
+        this.publish();
       },
     });
     this.engine = engine;
@@ -233,15 +414,16 @@ export class AppController {
       engine.peers.subscribe(publish),
       engine.history.subscribe(publish),
       engine.lastSendError.subscribe(publish),
+      engine.membership.subscribe(publish),
     ];
     const started = await engine.start();
     this.startError = started.ok ? null : started.error;
-    if (!started.ok) {
-      this.deps.logger.error('engine did not start', { code: started.error.code });
-    }
+    if (!started.ok) this.deps.logger.error('engine did not start', { code: started.error.code });
   }
 
   private async stopEngine(): Promise<void> {
+    this.hosting?.unsubscribe();
+    this.hosting = null;
     for (const unsubscribe of this.engineSubscriptions) unsubscribe();
     this.engineSubscriptions = [];
     await this.engine?.stop();
@@ -254,6 +436,18 @@ export class AppController {
     return stored.success ? stored.data : DEFAULT_SETTINGS;
   }
 
+  private publishJoin(): void {
+    this.joinView = {
+      ...this.joinView,
+      searching: this.stopSearch !== null,
+      hosts: [...this.pairingHosts.values()].map((service) => ({
+        id: service.instanceId,
+        label: service.addresses.map((address) => address.host).join(', '),
+      })),
+    };
+    this.publish();
+  }
+
   private publish(): void {
     this.store.set(this.buildSnapshot());
   }
@@ -263,6 +457,7 @@ export class AppController {
     const status = this.startError
       ? { kind: 'ERROR' as const, connectedCount: 0, peerCount: 0, issue: this.startError }
       : (engine?.status.get() ?? notPairedStatus);
+    const membership = engine?.membership.get() ?? this.group?.membership;
     return {
       status,
       devices: engine?.peers.get() ?? [],
@@ -270,18 +465,49 @@ export class AppController {
       settings: this.settings,
       pairing: {
         paired: this.group !== null,
-        devMode: this.deps.devMode,
-        groupId: this.group?.groupId ?? null,
-        memberCount: this.group?.membership.members.length ?? 0,
+        selfId: this.self?.device.id ?? null,
+        selfName: this.self ? this.selfName() : null,
+        memberCount: membership?.members.length ?? 0,
+        hosting: this.hostingView(),
+        joining: this.joinView,
       },
       lastSendError: engine?.lastSendError.get() ?? null,
     };
   }
 
+  private hostingView(): HostingView | null {
+    const hosting = this.hosting;
+    if (!hosting) return null;
+    const { session } = hosting;
+    const state = session.state.get();
+    const link = /h=([^&,]+)[^&]*&p=(\d+)/.exec(session.qrLink);
+    return {
+      code: session.code,
+      qrSvg: hosting.qrSvg,
+      expiresAt: session.expiresAt,
+      address: link ? `${link[1] ?? ''}:${link[2] ?? ''}` : '',
+      state: state.kind,
+      attemptsLeft: state.kind === 'waiting' ? state.attemptsLeft : 0,
+      request:
+        state.kind === 'awaiting-approval'
+          ? { name: state.request.name, platform: state.request.platform }
+          : null,
+      addedDeviceName: state.kind === 'completed' ? state.device.name : null,
+      error: state.kind === 'failed' ? state.error : null,
+    };
+  }
+
+  private selfName(): string {
+    const self = this.requireSelf();
+    const membership = this.engine?.membership.get() ?? this.group?.membership;
+    return (membership && findMember(membership, self.device.id)?.name) ?? self.device.name;
+  }
+
   private toHistoryItem(entry: HistoryEntry): HistoryItemView {
     const { clip } = entry;
     const selfId = this.self?.device.id;
-    const sender = this.group ? findMember(this.group.membership, clip.origin) : undefined;
+    const membership = this.engine?.membership.get();
+    const sender = membership ? findMember(membership, clip.origin) : undefined;
     return {
       id: clip.id,
       kind: clip.content.kind,
@@ -298,7 +524,7 @@ export class AppController {
     return this.self;
   }
 
-  private requireGroup(): StoredGroup {
+  private requireGroup(): GroupCredentials {
     if (!this.group) throw new Error('Not paired');
     return this.group;
   }

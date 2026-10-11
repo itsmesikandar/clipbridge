@@ -7,6 +7,10 @@
  * The MAC proves group membership (holds the group key); the signature proves
  * the device identity listed in the signed member list. Both sides then derive
  * one key per direction from the group key and the transcript.
+ *
+ * Key epochs: both HELLOs carry the sender's current epoch and the lower one is
+ * used, so a device that missed a key rotation can still connect to a current
+ * member, which then hands it the new key (docs/PLAN.md §8.4).
  */
 
 import {
@@ -28,11 +32,16 @@ import type { RandomPort } from '../ports/random';
 import type { AuthFrame, HandshakeRole, HelloFrame } from './frames';
 import { PROTOCOL_VERSION } from './version';
 
+/** Current group key plus recent previous keys, by epoch. */
+export interface GroupKeyRing {
+  readonly epoch: number;
+  keyFor(epoch: number): Uint8Array | null;
+}
+
 export interface HandshakeCredentials {
   readonly deviceId: DeviceId;
   readonly identity: IdentityKeyPair;
-  readonly groupKey: Uint8Array;
-  readonly epoch: number;
+  readonly keys: GroupKeyRing;
 }
 
 export interface SessionKeys {
@@ -56,7 +65,7 @@ export function createHello(
     deviceId: credentials.deviceId,
     signPublicKey: bytesToBase64(credentials.identity.signPublicKey),
     nonce: bytesToBase64(random.randomBytes(KEY_LENGTH)),
-    epoch: credentials.epoch,
+    epoch: credentials.keys.epoch,
     role,
   };
 }
@@ -72,15 +81,29 @@ export function handshakeTranscript(initiator: HelloFrame, responder: HelloFrame
   return sha256(concatBytes(TRANSCRIPT_LABEL, ...fields.map(lengthPrefixed)));
 }
 
+/**
+ * Picks the key both sides hold: the one for the lower of the two epochs.
+ * Returns null when this device no longer keeps that key.
+ */
+export function negotiateGroupKey(
+  keys: GroupKeyRing,
+  peerEpoch: number,
+): { readonly epoch: number; readonly key: Uint8Array } | null {
+  const epoch = Math.min(keys.epoch, peerEpoch);
+  const key = keys.keyFor(epoch);
+  return key ? { epoch, key } : null;
+}
+
 export function createAuth(
   credentials: HandshakeCredentials,
   role: HandshakeRole,
   transcript: Uint8Array,
+  groupKey: Uint8Array,
 ): AuthFrame {
   return {
     v: PROTOCOL_VERSION,
     t: 'AUTH',
-    mac: bytesToBase64(hmacSha256(credentials.groupKey, authMessage(MAC_LABEL, role, transcript))),
+    mac: bytesToBase64(hmacSha256(groupKey, authMessage(MAC_LABEL, role, transcript))),
     sig: bytesToBase64(
       sign(authMessage(SIG_LABEL, role, transcript), credentials.identity.signSecretKey),
     ),
@@ -88,8 +111,8 @@ export function createAuth(
 }
 
 export interface VerifyAuthInput {
+  /** The negotiated key (see `negotiateGroupKey`). */
   readonly groupKey: Uint8Array;
-  readonly epoch: number;
   readonly membership: Membership;
   readonly transcript: Uint8Array;
   readonly peerHello: HelloFrame;
@@ -108,8 +131,6 @@ export function verifyPeerAuth(
         reason,
       }),
     );
-
-  if (peerHello.epoch !== input.epoch) return fail('epoch-mismatch');
 
   const signPublicKey = base64ToBytes(peerHello.signPublicKey);
   if (!signPublicKey || deviceIdFromSignPublicKey(signPublicKey) !== peerHello.deviceId) {

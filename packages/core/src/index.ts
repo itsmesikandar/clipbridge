@@ -21,7 +21,23 @@ export {
   type GroupCredentials,
   type LocalDevice,
 } from './application/engine';
+export { type EpochKey, MAX_PREVIOUS_KEYS } from './application/group-keys';
 export { decideMembership, isMember, signMembership } from './application/membership-service';
+export {
+  type GroupForJoiner,
+  type JoinRequest,
+  PAIRING_TIMING,
+  type PairingHostSession,
+  type PairingHostState,
+} from './application/pairing-host';
+export {
+  type JoinAttempt,
+  type JoinDeps,
+  type JoinedGroup,
+  joinGroup,
+  type JoinOptions,
+  type JoinState,
+} from './application/pairing-joiner';
 export { DEFAULT_LISTEN_PORT } from './application/peer-manager';
 export type { ReadonlyStore } from './application/store';
 export type { SyncSettings } from './application/sync-engine';
@@ -71,7 +87,7 @@ export type {
 } from './domain/status';
 
 // Crypto needed by apps to create and restore identities and groups
-export { generateGroupKey, groupTag } from './crypto/group-key';
+export { generateGroupId, generateGroupKey, groupTag } from './crypto/group-key';
 export {
   deviceIdFromSignPublicKey,
   generateIdentity,
@@ -84,5 +100,15 @@ export { base64ToBytes, bytesToBase64 } from './lib/base64';
 export type * from './ports';
 
 // Protocol
+export type { PairingMethod } from './protocol/frames';
+export {
+  buildPairingLink,
+  formatPairingCode,
+  normalizePairingCode,
+  PAIRING_CODE_LENGTH,
+  type PairingLink,
+  pairingSecret,
+  parsePairingLink,
+} from './protocol/pairing';
 export { PROTOCOL_VERSION } from './protocol/version';
 export { parseMembership } from './protocol/wire';

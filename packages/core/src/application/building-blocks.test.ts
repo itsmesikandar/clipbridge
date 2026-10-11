@@ -7,6 +7,7 @@ import { SeededRandom } from '../testing/seeded-random';
 import { BACKOFF, backoffDelayMs } from './backoff';
 import { BoundedSet } from './bounded-set';
 import { ClipHistory } from './clip-history';
+import { GroupKeys, MAX_PREVIOUS_KEYS } from './group-keys';
 import {
   decideMembership,
   isMember,
@@ -154,5 +155,33 @@ describe('membership', () => {
   it('rejects lists with duplicate members', () => {
     const duplicated = next(b, [...group.membership.members, a.device]);
     expect(decideMembership(group.membership, duplicated)).toBe('reject');
+  });
+});
+
+describe('GroupKeys', () => {
+  const key = (n: number): Uint8Array => new Uint8Array(32).fill(n);
+
+  it('serves the current and previous keys by epoch', () => {
+    const keys = new GroupKeys({ epoch: 3, key: key(3) }, [
+      { epoch: 1, key: key(1) },
+      { epoch: 2, key: key(2) },
+      { epoch: 5, key: key(5) }, // newer than current: ignored
+    ]);
+    expect(keys.epoch).toBe(3);
+    expect(keys.keyFor(3)).toEqual(key(3));
+    expect(keys.keyFor(2)).toEqual(key(2));
+    expect(keys.keyFor(5)).toBeNull();
+    expect(keys.previous.map((entry) => entry.epoch)).toEqual([2, 1]);
+  });
+
+  it('rotates forward only and forgets the oldest keys', () => {
+    const keys = new GroupKeys({ epoch: 1, key: key(1) });
+    expect(keys.rotate({ epoch: 1, key: key(9) })).toBe(false);
+    for (let epoch = 2; epoch <= 6; epoch++)
+      expect(keys.rotate({ epoch, key: key(epoch) })).toBe(true);
+    expect(keys.current.epoch).toBe(6);
+    expect(keys.previous).toHaveLength(MAX_PREVIOUS_KEYS);
+    expect(keys.keyFor(2)).toBeNull();
+    expect(keys.keyFor(3)).toEqual(key(3));
   });
 });

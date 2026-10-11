@@ -8,6 +8,7 @@ import { join } from 'node:path';
 
 import type { EnginePorts } from '@clipbridge/core';
 import { app, clipboard, Notification, safeStorage, shell } from 'electron';
+import { toString as renderQrCode } from 'qrcode';
 
 import { BonjourDiscovery } from './adapters/bonjour-discovery';
 import { ElectronClipboard } from './adapters/electron-clipboard';
@@ -31,6 +32,8 @@ export interface Container {
 
 export interface ContainerOptions {
   readonly devMode: boolean;
+  /** Brings the main window to the front (a device wants to join). */
+  readonly showWindow: () => void;
   /** Suffix for running several instances on one machine (development). */
   readonly profile: string | null;
 }
@@ -88,7 +91,11 @@ export function createContainer(options: ContainerOptions): Container {
     defaultDeviceName: options.profile ? `${baseName} (${options.profile})` : baseName,
     appVersion: app.getVersion(),
     logFile,
-    devMode: options.devMode,
+    renderQr: (text) => renderQrCode(text, { type: 'svg', margin: 1, errorCorrectionLevel: 'M' }),
+    requestAttention: (message) => {
+      options.showWindow();
+      showNotification({ title: 'ClipBridge', body: message, openUrl: null });
+    },
   });
 
   return { controller, logger, discovery, networkInfo };

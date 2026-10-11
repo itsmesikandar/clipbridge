@@ -19,6 +19,8 @@ export interface TestDevice {
   readonly notifier: FakeNotifier;
   readonly logger: MemoryLogger;
   readonly adoptedMemberships: Membership[];
+  /** Every credential change reported through `onGroupChanged`. */
+  readonly groupChanges: GroupCredentials[];
 }
 
 export interface TestDeviceOptions extends NodeOptions {
@@ -41,6 +43,7 @@ export class TestHarness {
     const notifier = new FakeNotifier();
     const logger = new MemoryLogger();
     const adoptedMemberships: Membership[] = [];
+    const groupChanges: GroupCredentials[] = [];
     const isPhone = member.device.platform === 'android' || member.device.platform === 'ios';
     const engine = createEngine({
       self: member,
@@ -56,9 +59,12 @@ export class TestHarness {
         clipboard: isPhone ? clipboard.asPhoneClipboard() : clipboard,
         notifier,
       },
-      onMembershipChanged: (membership) => adoptedMemberships.push(membership),
+      onGroupChanged: (group) => {
+        groupChanges.push(group);
+        adoptedMemberships.push(group.membership);
+      },
     });
-    return { member, node, engine, clipboard, notifier, logger, adoptedMemberships };
+    return { member, node, engine, clipboard, notifier, logger, adoptedMemberships, groupChanges };
   }
 
   /** Starts engines and lets discovery, dialing and handshakes complete. */

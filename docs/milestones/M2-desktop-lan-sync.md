@@ -6,7 +6,7 @@
 
 **Depends on:** M1.
 
-> Real pairing comes in M3. Until then, **developer pairing** connects computers with a two-step text exchange (invite → reply). It is only shown when the app runs unpackaged or with `CLIPBRIDGE_DEV=1`.
+> M2 used a temporary **developer pairing** (text invite → reply). It was removed in M3 and replaced by code / QR pairing.
 
 ---
 

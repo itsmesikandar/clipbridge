@@ -21,7 +21,12 @@ export type AuthFailureReason =
   | 'rejected-by-peer';
 
 export type ConnectionLostReason =
-  'heartbeat-timeout' | 'closed' | 'replaced' | 'handshake-timeout';
+  | 'heartbeat-timeout'
+  | 'closed'
+  | 'replaced'
+  | 'handshake-timeout'
+  /** Reconnecting with a new group key after a device was removed. */
+  | 'rekey';
 
 export interface AppErrorDetailsMap {
   /** No Wi-Fi/LAN connection (e.g. phone on mobile data only). */

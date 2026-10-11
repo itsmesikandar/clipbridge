@@ -24,6 +24,7 @@ import type {
   TransportPort,
   Unsubscribe,
 } from '../ports/transport';
+import { encodeFrame } from '../protocol/codec';
 import { PROTOCOL_VERSION } from '../protocol/version';
 import { backoffDelayMs } from './backoff';
 import { establishSession, type PeerSession, type SessionContext } from './peer-session';
@@ -31,6 +32,8 @@ import { createStore, type ReadonlyStore } from './store';
 
 export const DEFAULT_LISTEN_PORT = 47821;
 export const DIAL_TIMEOUT_MS = 5_000;
+/** An incoming connection must say what it wants (HELLO or PAIR_HELLO) within this time. */
+const FIRST_FRAME_TIMEOUT_MS = 10_000;
 
 export interface PeerManagerDeps {
   readonly clock: ClockPort;
@@ -72,6 +75,7 @@ export class PeerManager {
   private stopBrowsing: Unsubscribe | null = null;
   private running = false;
   private currentSubnet: string | null = null;
+  private pairingHandler: ((connection: TransportConnection) => void) | null = null;
 
   constructor(
     private readonly options: PeerManagerOptions,
@@ -193,6 +197,24 @@ export class PeerManager {
     this.publish();
   }
 
+  /**
+   * Routes incoming pairing connections to `handler` and advertises pairing
+   * mode (`pm=1`) while set; pass null to stop.
+   */
+  async setPairingHandler(
+    handler: ((connection: TransportConnection) => void) | null,
+  ): Promise<void> {
+    this.pairingHandler = handler;
+    await this.refreshAdvertisement();
+  }
+
+  /** Closes every session so peers reconnect (used after a key rotation). */
+  reconnectAll(reason: AppError): void {
+    for (const record of this.records.values()) {
+      record.session?.close(reason);
+    }
+  }
+
   /** Re-publishes the advertisement (e.g. after the group key changed). */
   async refreshAdvertisement(): Promise<void> {
     if (!this.advertiser || !this.listener) return;
@@ -227,7 +249,7 @@ export class PeerManager {
       deviceId: this.options.selfId,
       port,
       groupTag: this.options.groupTag(),
-      pairingMode: false,
+      pairingMode: this.pairingHandler !== null,
       protocolVersion: PROTOCOL_VERSION,
     };
   }
@@ -328,9 +350,27 @@ export class PeerManager {
     this.publish();
   }
 
-  private async acceptConnection(connection: TransportConnection): Promise<void> {
+  private async acceptConnection(raw: TransportConnection): Promise<void> {
     if (!this.running) {
-      connection.close('not running');
+      raw.close('not running');
+      return;
+    }
+    const first = await readFirstFrameType(raw, FIRST_FRAME_TIMEOUT_MS, this.deps.clock);
+    if (!first) return;
+    const connection = replayFirstMessage(raw, first.raw);
+    if (first.type.startsWith('PAIR_')) {
+      if (this.pairingHandler) this.pairingHandler(connection);
+      else {
+        connection.send(
+          encodeFrame({
+            v: PROTOCOL_VERSION,
+            t: 'PAIR_ERROR',
+            code: 'PAIRING_EXPIRED',
+            attemptsLeft: 0,
+          }),
+        );
+        connection.close('not in pairing mode');
+      }
       return;
     }
     const established = await establishSession(
@@ -460,6 +500,80 @@ function withPeer(error: AppError, member: DeviceRecord, address: PeerAddress): 
       peerId: member.id,
       peerName: member.name,
       address: `${address.host}:${address.port}`,
+    },
+  };
+}
+
+/** Waits for the first frame to decide between a session handshake and pairing. */
+function readFirstFrameType(
+  connection: TransportConnection,
+  timeoutMs: number,
+  clock: ClockPort,
+): Promise<{ readonly raw: string; readonly type: string } | null> {
+  return new Promise((resolve) => {
+    let done = false;
+    const finish = (value: { raw: string; type: string } | null): void => {
+      if (done) return;
+      done = true;
+      cancelTimer();
+      unsubscribeMessage();
+      unsubscribeClose();
+      resolve(value);
+    };
+    const cancelTimer = clock.schedule(timeoutMs, () => {
+      connection.close('no first frame');
+      finish(null);
+    });
+    const unsubscribeClose = connection.onClose(() => {
+      finish(null);
+    });
+    const unsubscribeMessage = connection.onMessage((raw) => {
+      let type: unknown;
+      try {
+        type = (JSON.parse(raw) as { t?: unknown }).t;
+      } catch {
+        type = undefined;
+      }
+      if (typeof type !== 'string') {
+        connection.close('invalid first frame');
+        finish(null);
+        return;
+      }
+      finish({ raw, type });
+    });
+  });
+}
+
+/**
+ * Wraps a connection so its first message (already read by the router) is
+ * delivered again to the first listener. Safe because both protocols wait
+ * for an answer after their first frame, so nothing else is in flight.
+ */
+function replayFirstMessage(connection: TransportConnection, first: string): TransportConnection {
+  let pending: string | null = first;
+  return {
+    remoteAddress: connection.remoteAddress,
+    send: (data) => {
+      connection.send(data);
+    },
+    close: (reason) => {
+      connection.close(reason);
+    },
+    onClose: (listener) => connection.onClose(listener),
+    onMessage: (listener) => {
+      let active = true;
+      const unsubscribe = connection.onMessage(listener);
+      if (pending !== null) {
+        const message = pending;
+        pending = null;
+        void Promise.resolve().then(() => {
+          if (active) listener(message);
+        });
+      }
+      return () => {
+        active = false;
+        unsubscribe();
+      };
     },
   };
 }

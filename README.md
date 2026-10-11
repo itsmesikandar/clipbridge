@@ -32,11 +32,13 @@ pnpm dev:desktop      # run the desktop app
 pnpm dev:mobile       # start the mobile dev server
 ```
 
-### Try desktop sync (Milestone 2)
+### Pair your computers
 
-Run the desktop app on two computers on the same Wi-Fi, then use **Developer pairing** in the app:
-computer A → _Create group_ → _Show invite_; computer B → paste → _Join with invite_; paste B's reply on A → _Accept reply_.
-To run two instances on one computer, see [`docs/milestones/M2-desktop-lan-sync.md`](docs/milestones/M2-desktop-lan-sync.md#several-instances-on-one-computer).
+1. On the first computer: **Start a new group**.
+2. Click **Add device**. It shows a code (and a QR code for phones).
+3. On the other computer: enter the code under **Join my devices**, then click **Allow** on the first computer.
+
+To run two instances on one computer for testing, see [`docs/milestones/M2-desktop-lan-sync.md`](docs/milestones/M2-desktop-lan-sync.md#several-instances-on-one-computer).
 
 App data and logs: `%APPDATA%\ClipBridge` (Windows), `~/Library/Application Support/ClipBridge` (macOS); log file `logs/main.log`.
 

@@ -10,7 +10,7 @@ import {
 import { describe, expect, it } from 'vitest';
 
 import { AppController } from './app-controller';
-import { CredentialStore } from './identity/credential-store';
+import { CredentialStore, decodeEpochKeys, encodeEpochKeys } from './identity/credential-store';
 
 class MemoryStorage implements StoragePort {
   readonly data = new Map<string, string>();
@@ -52,13 +52,14 @@ function world() {
 
   function computer(
     name: string,
-    options: { devMode?: boolean; storage?: MemoryStorage; secure?: MemorySecureStorage } = {},
+    options: { storage?: MemoryStorage; secure?: MemorySecureStorage; nodeName?: string } = {},
   ) {
-    const node = network.createNode(name, { subnet: HOME });
+    const node = network.createNode(options.nodeName ?? name, { subnet: HOME });
     const storage = options.storage ?? new MemoryStorage();
     const secure = options.secure ?? new MemorySecureStorage();
     const random = new SeededRandom(seed++);
     const clipboard = new FakeClipboard();
+    const attention: string[] = [];
     const controller = new AppController({
       ports: {
         clock,
@@ -77,92 +78,212 @@ function world() {
       defaultDeviceName: name,
       appVersion: '0.1.0',
       logFile: 'main.log',
-      devMode: options.devMode ?? true,
+      renderQr: (text) => Promise.resolve(`<svg data-link="${text}"/>`),
+      requestAttention: (message) => attention.push(message),
     });
-    return { controller, clipboard, storage, secure, node };
+    return { controller, clipboard, storage, secure, node, attention };
   }
 
   return { clock, network, computer };
 }
 
-async function pair(a: AppController, b: AppController): Promise<void> {
-  expect((await a.dev.createGroup()).ok).toBe(true);
-  const invite = await a.dev.exportInvite();
-  if (!invite.ok) throw new Error(invite.message);
-  const reply = await b.dev.importInvite(invite.value);
-  if (!reply.ok) throw new Error(reply.message);
-  expect((await a.dev.importReply(reply.value)).ok).toBe(true);
+type Computer = ReturnType<ReturnType<typeof world>['computer']>;
+
+/** Host shows a code; joiner finds it and enters it; host clicks Allow. */
+async function pair(host: Computer, joiner: Computer, clock: FakeClock): Promise<void> {
+  if (!host.controller.snapshot.get().pairing.paired) {
+    expect((await host.controller.createGroup()).ok).toBe(true);
+  }
+  expect((await host.controller.startHosting()).ok).toBe(true);
+  const code = host.controller.snapshot.get().pairing.hosting?.code ?? '';
+  await joiner.controller.startJoinSearch();
+  await clock.advance(10);
+  expect(joiner.controller.snapshot.get().pairing.joining.hosts).toHaveLength(1);
+
+  const joining = joiner.controller.join({ code: code.toLowerCase(), hostId: null, address: null });
+  await clock.advance(50);
+  expect(joiner.controller.snapshot.get().pairing.joining.state).toBe('awaiting-approval');
+  host.controller.approveJoin();
+  expect(await joining).toEqual({ ok: true, value: undefined });
+  await clock.advance(1_000);
 }
 
-describe('AppController with developer pairing', () => {
-  it('starts unpaired, pairs two computers and syncs a copy', async () => {
+describe('AppController pairing', () => {
+  it('pairs two computers by code and syncs', async () => {
     const { clock, computer } = world();
     const laptop = computer('Laptop');
     const desktop = computer('Desktop');
     await laptop.controller.init();
     await desktop.controller.init();
     expect(laptop.controller.snapshot.get().status.kind).toBe('NOT_PAIRED');
-    expect(laptop.controller.snapshot.get().pairing).toMatchObject({
-      paired: false,
-      devMode: true,
+
+    await pair(laptop, desktop, clock);
+
+    expect(laptop.attention).toEqual(['"Desktop" wants to join your devices']);
+    const hosting = laptop.controller.snapshot.get().pairing.hosting;
+    expect(hosting).toMatchObject({
+      state: 'completed',
+      addedDeviceName: 'Desktop',
+      address: '192.168.1.10:47821',
     });
+    expect(hosting?.qrSvg).toContain('clipbridge://pair?v=1');
+    laptop.controller.stopHosting();
 
-    await pair(laptop.controller, desktop.controller);
-    await clock.advance(1_000);
-
-    const laptopState = laptop.controller.snapshot.get();
-    expect(laptopState.status).toMatchObject({ kind: 'CONNECTED', connectedCount: 1 });
-    expect(laptopState.pairing.memberCount).toBe(2);
-    expect(desktop.controller.snapshot.get().status.kind).toBe('CONNECTED');
+    for (const side of [laptop, desktop]) {
+      expect(side.controller.snapshot.get().status).toMatchObject({
+        kind: 'CONNECTED',
+        connectedCount: 1,
+      });
+      expect(side.controller.snapshot.get().pairing.memberCount).toBe(2);
+    }
+    expect(desktop.controller.snapshot.get().pairing.joining.state).toBe('joined');
 
     laptop.clipboard.userCopies({ kind: 'url', url: 'https://example.com' });
     await clock.advance(100);
     expect(desktop.clipboard.writes).toEqual([{ kind: 'url', url: 'https://example.com' }]);
-
     const [item] = desktop.controller.snapshot.get().history;
-    expect(item).toMatchObject({
-      kind: 'url',
-      preview: 'https://example.com',
-      fromName: 'Laptop',
-      fromThisDevice: false,
-    });
-    const [own] = laptop.controller.snapshot.get().history;
-    expect(own).toMatchObject({ fromName: 'This device', fromThisDevice: true, deliveredCount: 1 });
-
-    await laptop.controller.shutdown();
-    await desktop.controller.shutdown();
+    expect(item).toMatchObject({ kind: 'url', fromName: 'Laptop', fromThisDevice: false });
   });
 
-  it('keeps identity and group across restarts', async () => {
+  it('joins with a manually typed address when discovery finds nothing', async () => {
     const { clock, computer } = world();
     const laptop = computer('Laptop');
     const desktop = computer('Desktop');
     await laptop.controller.init();
     await desktop.controller.init();
-    await pair(laptop.controller, desktop.controller);
-    const before = await desktop.controller.diagnostics();
-    await desktop.controller.shutdown();
+    await laptop.controller.createGroup();
+    await laptop.controller.startHosting();
+    const code = laptop.controller.snapshot.get().pairing.hosting?.code ?? '';
 
-    const restarted = computer('Desktop-2', { storage: desktop.storage, secure: desktop.secure });
-    await restarted.controller.init();
-    await clock.advance(1_000);
-    const after = await restarted.controller.diagnostics();
-    expect(after.deviceId).toBe(before.deviceId);
-    expect(after.deviceName).toBe('Desktop'); // name stored on first launch
-    expect(restarted.controller.snapshot.get().pairing.paired).toBe(true);
-    expect([...desktop.secure.data.keys()].sort()).toEqual(['group-key', 'identity']);
+    // Discovery not started: no hosts known, so the address is required.
+    expect(await desktop.controller.join({ code, hostId: null, address: null })).toMatchObject({
+      ok: false,
+    });
+    expect(
+      await desktop.controller.join({ code, hostId: null, address: 'not an ip' }),
+    ).toMatchObject({
+      ok: false,
+      message: 'Enter an address like 192.168.1.7 or 192.168.1.7:47821.',
+    });
+
+    // In-memory hosts are named, so use a numeric-looking alias for the laptop.
+    const joining = desktop.controller.join({ code, hostId: null, address: '10.0.0.1:47821' });
+    await clock.advance(50);
+    expect(await joining).toMatchObject({ ok: false, issue: { code: 'PEER_UNREACHABLE' } });
+    expect(desktop.controller.snapshot.get().pairing.joining.state).toBe('failed');
   });
 
-  it('persists settings and applies them', async () => {
+  it('explains a wrong code, a denial and invalid input', async () => {
+    const { clock, computer } = world();
+    const laptop = computer('Laptop');
+    const desktop = computer('Desktop');
+    await laptop.controller.init();
+    await desktop.controller.init();
+
+    expect((await laptop.controller.startHosting()).ok).toBe(false); // no group yet
+    expect(
+      await desktop.controller.join({ code: '123', hostId: null, address: null }),
+    ).toMatchObject({
+      ok: false,
+      message: expect.stringContaining('12 letters') as string,
+    });
+
+    await laptop.controller.createGroup();
+    expect((await laptop.controller.createGroup()).ok).toBe(false);
+    await laptop.controller.startHosting();
+    await desktop.controller.startJoinSearch();
+    await clock.advance(10);
+
+    const wrong = desktop.controller.join({ code: 'AAAA-AAAA-AAAA', hostId: null, address: null });
+    await clock.advance(50);
+    expect(await wrong).toMatchObject({ ok: false, issue: { code: 'PAIRING_CODE_INVALID' } });
+    expect(laptop.controller.snapshot.get().pairing.hosting).toMatchObject({
+      state: 'waiting',
+      attemptsLeft: 2,
+    });
+
+    const code = laptop.controller.snapshot.get().pairing.hosting?.code ?? '';
+    const denied = desktop.controller.join({ code, hostId: null, address: null });
+    await clock.advance(50);
+    laptop.controller.denyJoin();
+    expect(await denied).toMatchObject({ ok: false, issue: { code: 'PAIRING_REJECTED' } });
+    expect(desktop.controller.snapshot.get().pairing.paired).toBe(false);
+  });
+});
+
+describe('AppController devices', () => {
+  it('renames and removes devices; the removed one is told', async () => {
+    const { clock, computer } = world();
+    const laptop = computer('Laptop');
+    const desktop = computer('Desktop');
+    const spare = computer('Spare');
+    for (const side of [laptop, desktop, spare]) await side.controller.init();
+    await pair(laptop, desktop, clock);
+    laptop.controller.stopHosting();
+    await pair(laptop, spare, clock);
+    laptop.controller.stopHosting();
+    expect(desktop.controller.snapshot.get().pairing.memberCount).toBe(3);
+
+    const spareId = spare.controller.snapshot.get().pairing.selfId ?? '';
+    expect((await desktop.controller.renameDevice(spareId, 'Old laptop')).ok).toBe(true);
+    await clock.advance(100);
+    expect(laptop.controller.snapshot.get().devices.map((d) => d.name)).toContain('Old laptop');
+
+    expect(
+      desktop.controller.removeDevice(desktop.controller.snapshot.get().pairing.selfId ?? '').ok,
+    ).toBe(false);
+    expect(desktop.controller.removeDevice(spareId).ok).toBe(true);
+    await clock.advance(3_000);
+    expect(spare.controller.snapshot.get().status.issue?.code).toBe('REMOVED_FROM_GROUP');
+    expect(laptop.controller.snapshot.get().pairing.memberCount).toBe(2);
+    expect(laptop.controller.snapshot.get().status.kind).toBe('CONNECTED');
+
+    // The rotated key and the previous one are stored encrypted.
+    const previous = decodeEpochKeys(laptop.secure.data.get('previous-keys') ?? new Uint8Array(0));
+    expect(previous.map((entry) => entry.epoch)).toEqual([1]);
+  });
+
+  it('renames this computer and keeps the name after a restart', async () => {
+    const { clock, computer } = world();
+    const laptop = computer('Laptop');
+    await laptop.controller.init();
+    await laptop.controller.createGroup();
+    const selfId = laptop.controller.snapshot.get().pairing.selfId ?? '';
+    expect((await laptop.controller.renameDevice(selfId, ' Work laptop ')).ok).toBe(true);
+    expect(laptop.controller.snapshot.get().pairing.selfName).toBe('Work laptop');
+    await laptop.controller.shutdown();
+
+    const again = computer('Laptop-2', { storage: laptop.storage, secure: laptop.secure });
+    await again.controller.init();
+    await clock.advance(10);
+    expect(again.controller.snapshot.get().pairing).toMatchObject({
+      paired: true,
+      selfName: 'Work laptop',
+    });
+    expect((await again.controller.diagnostics()).deviceId).toBe(selfId);
+  });
+
+  it('reset forgets the group on this computer only', async () => {
+    const { clock, computer } = world();
+    const laptop = computer('Laptop');
+    const desktop = computer('Desktop');
+    await laptop.controller.init();
+    await desktop.controller.init();
+    await pair(laptop, desktop, clock);
+    expect((await desktop.controller.resetThisDevice()).ok).toBe(true);
+    expect(desktop.controller.snapshot.get().pairing.paired).toBe(false);
+    expect([...desktop.secure.data.keys()]).toEqual(['identity']);
+    expect(laptop.controller.snapshot.get().pairing.memberCount).toBe(2);
+  });
+});
+
+describe('AppController basics', () => {
+  it('persists settings', async () => {
     const { computer } = world();
     const laptop = computer('Laptop');
     await laptop.controller.init();
     await laptop.controller.updateSettings({ notifyOnReceive: false });
-    expect(laptop.controller.snapshot.get().settings).toEqual({
-      sendEnabled: true,
-      receiveEnabled: true,
-      notifyOnReceive: false,
-    });
+    expect(laptop.controller.snapshot.get().settings.notifyOnReceive).toBe(false);
     expect(JSON.parse(laptop.storage.data.get('settings') ?? '{}')).toMatchObject({
       notifyOnReceive: false,
     });
@@ -174,8 +295,7 @@ describe('AppController with developer pairing', () => {
     const desktop = computer('Desktop');
     await laptop.controller.init();
     await desktop.controller.init();
-    await pair(laptop.controller, desktop.controller);
-    await clock.advance(1_000);
+    await pair(laptop, desktop, clock);
     laptop.clipboard.userCopies({ kind: 'text', text: 'first' });
     await clock.advance(10);
     laptop.clipboard.userCopies({ kind: 'text', text: 'second' });
@@ -192,44 +312,24 @@ describe('AppController with developer pairing', () => {
     expect((await desktop.controller.copyHistoryItem('missing')).ok).toBe(false);
   });
 
-  it('explains bad input and blocks dev pairing outside dev mode', async () => {
-    const { computer } = world();
-    const laptop = computer('Laptop');
-    const locked = computer('Locked', { devMode: false });
-    await laptop.controller.init();
-    await locked.controller.init();
-
-    expect(await laptop.controller.dev.importInvite('nonsense')).toEqual({
-      ok: false,
-      message: 'This is not a valid invite.',
-    });
-    expect(await laptop.controller.dev.exportInvite()).toEqual({
-      ok: false,
-      message: 'Create or join a group first.',
-    });
-    expect(await locked.controller.dev.createGroup()).toEqual({
-      ok: false,
-      message: 'Not available.',
-    });
-
-    await laptop.controller.dev.createGroup();
-    expect(await laptop.controller.dev.importReply('nonsense')).toEqual({
-      ok: false,
-      message: 'This is not a valid reply.',
-    });
-    expect((await laptop.controller.dev.leaveGroup()).ok).toBe(true);
-    expect(laptop.controller.snapshot.get().pairing.paired).toBe(false);
-  });
-
   it('shows PORT_IN_USE when the network service cannot start', async () => {
     const { computer } = world();
     const laptop = computer('Laptop');
     laptop.node.failListen = true;
     await laptop.controller.init();
-    await laptop.controller.dev.createGroup();
+    await laptop.controller.createGroup();
     expect(laptop.controller.snapshot.get().status).toMatchObject({
       kind: 'ERROR',
       issue: { code: 'PORT_IN_USE' },
     });
+  });
+
+  it('encodes previous keys compactly and rejects damaged data', () => {
+    const keys = [
+      { epoch: 3, key: new Uint8Array(32).fill(3) },
+      { epoch: 2, key: new Uint8Array(32).fill(2) },
+    ];
+    expect(decodeEpochKeys(encodeEpochKeys(keys))).toEqual(keys);
+    expect(decodeEpochKeys(new Uint8Array(5))).toEqual([]);
   });
 });

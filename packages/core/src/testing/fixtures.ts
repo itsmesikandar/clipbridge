@@ -1,5 +1,5 @@
 import { signMembership } from '../application/membership-service';
-import { generateGroupKey } from '../crypto/group-key';
+import { generateGroupId, generateGroupKey } from '../crypto/group-key';
 import {
   deviceIdFromSignPublicKey,
   generateIdentity,
@@ -56,9 +56,10 @@ export function createTestGroup(
   const members = specs.map((spec) => createTestMember(spec, random));
   const first = members[0];
   if (!first) throw new Error('createTestGroup needs at least one device');
+  const groupId = generateGroupId(random);
   const membership = signMembership(
     {
-      groupId: 'grp_test',
+      groupId,
       version: 1,
       members: members.map((member) => member.device),
       updatedBy: first.device.id,
@@ -66,5 +67,5 @@ export function createTestGroup(
     },
     first.identity,
   );
-  return { groupId: 'grp_test', groupKey: generateGroupKey(random), epoch: 1, membership, members };
+  return { groupId, groupKey: generateGroupKey(random), epoch: 1, membership, members };
 }

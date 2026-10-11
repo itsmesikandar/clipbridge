@@ -225,6 +225,7 @@ export class SyncEngine {
         }
         return;
       case 'MEMBERSHIP':
+      case 'KEY_ROTATE':
       case 'PING':
       case 'PONG':
         return; // handled elsewhere
