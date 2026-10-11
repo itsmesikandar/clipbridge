@@ -6,6 +6,7 @@
 import { hostname } from 'node:os';
 import { join } from 'node:path';
 
+import { AppController, CredentialStore } from '@clipbridge/app';
 import type { EnginePorts } from '@clipbridge/core';
 import { app, clipboard, Notification, safeStorage, shell } from 'electron';
 import { toString as renderQrCode } from 'qrcode';
@@ -19,9 +20,7 @@ import { NodeNetworkInfo } from './adapters/node-network-info';
 import { NodeRandom } from './adapters/node-random';
 import { SystemClock } from './adapters/system-clock';
 import { WsTransport } from './adapters/ws-transport';
-import { AppController } from './app-controller';
 import { toDesktopPlatform } from './app-info';
-import { CredentialStore } from './identity/credential-store';
 
 export interface Container {
   readonly controller: AppController;

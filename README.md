@@ -12,6 +12,7 @@ Copy on one device, paste on another — text, URLs and images between your lapt
 | ------------------------ | ------------------------------------------------------------------------------------------------------------------------ |
 | `apps/desktop`           | Electron app (Windows, macOS)                                                                                            |
 | `apps/mobile`            | Expo / React Native app (Android, iOS)                                                                                   |
+| `packages/app`           | Shared app layer: app controller, credential storage, view state, user-facing texts                                      |
 | `packages/core`          | Shared, platform-neutral logic: protocol, crypto, sync, pairing, diagnostics; test doubles in `@clipbridge/core/testing` |
 | `packages/tsconfig`      | Shared TypeScript configs                                                                                                |
 | `packages/eslint-config` | Shared ESLint configs, incl. architecture boundary rules                                                                 |
@@ -21,7 +22,7 @@ Copy on one device, paste on another — text, URLs and images between your lapt
 - **Node.js 24** (`.nvmrc`) and **pnpm 12** (`corepack enable` picks the version from `package.json`).
 - **Android:** Android Studio with an SDK and an emulator, or a phone with USB debugging. Set:
   - `ANDROID_HOME` → e.g. `%LOCALAPPDATA%\Android\Sdk`
-  - `JAVA_HOME` → e.g. `C:\Program Files\Android\Android Studio\jbr`
+  - `JAVA_HOME` → a **JDK 17** (e.g. `%USERPROFILE%\.jdks\ms-17.0.20.1`); Android Studio's bundled JDK 25 breaks the native (CMake) build
 - **iOS:** a Mac with Xcode (iOS cannot be built on Windows).
 
 ## Getting started

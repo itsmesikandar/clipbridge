@@ -268,7 +268,10 @@ export class InMemoryNetwork {
     address: PeerAddress,
     _timeoutMs: number,
   ): Promise<Result<TransportConnection, AppError>> {
-    const target = this.nodes.get(address.host);
+    // Nodes are reachable by name or by their simulated IPv4 address (e.g. from a QR code).
+    const target =
+      this.nodes.get(address.host) ??
+      [...this.nodes.values()].find((node) => node.ipv4 === address.host);
     const fail = (cause: PeerUnreachableCause): Promise<Result<never, AppError>> =>
       Promise.resolve(
         err(

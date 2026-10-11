@@ -3,6 +3,7 @@
 // Every package composes these in its own `eslint.config.mjs`:
 //   base()             TypeScript rules for any package
 //   react()            React + hooks rules (desktop renderer, mobile)
+//   platformNeutral()  forbids platform imports (packages shared by all apps)
 //   coreBoundaries()   enforces clean-architecture rules inside packages/core
 
 import { builtinModules } from 'node:module';
@@ -106,6 +107,14 @@ const platformRestriction = {
   })),
   patterns: PLATFORM_IMPORT_PATTERNS,
 };
+
+/** Shared packages that both apps use: no Node, Electron, React Native or Expo imports. */
+export function platformNeutral() {
+  return defineConfig({
+    files: ['src/**/*.ts'],
+    rules: { 'no-restricted-imports': ['error', platformRestriction] },
+  });
+}
 
 /**
  * Clean-architecture boundaries for packages/core (see docs/PLAN.md §5.1):

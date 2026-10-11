@@ -1,7 +1,7 @@
+import { describeJoinState } from '@clipbridge/app/presentation';
 import { useEffect, useState } from 'react';
 
 import type { JoiningView, PairingApi } from '../../../../shared/ipc-contract';
-import { describeJoinState } from '../pairing/pairing-model';
 
 export interface OnboardingPresenter {
   readonly code: string;

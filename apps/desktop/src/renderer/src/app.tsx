@@ -1,3 +1,5 @@
+import { toBannerModel } from '@clipbridge/app/presentation';
+import { describeIssue } from '@clipbridge/app/presentation';
 import { type ReactElement, useState } from 'react';
 
 import type { ClipBridgeApi } from '../../shared/ipc-contract';
@@ -10,9 +12,7 @@ import { AddDeviceDialog } from './features/pairing/add-device-dialog';
 import { SettingsPanel } from './features/settings/settings-panel';
 import { ThisDevicePanel } from './features/settings/this-device-panel';
 import { StatusBanner } from './features/status/status-banner';
-import { toBannerModel } from './features/status/status-model';
 import { TroubleshootPanel } from './features/status/troubleshoot-panel';
-import { describeIssue } from './i18n/issue-text';
 import { useAppSnapshot, useNow } from './state/use-app-snapshot';
 
 export function App({ api = window.clipbridge }: { readonly api?: ClipBridgeApi }): ReactElement {

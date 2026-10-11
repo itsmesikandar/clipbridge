@@ -1,86 +1,79 @@
 # M4 — Android App
 
-**Goal:** an Android phone joins the group by scanning a QR code, receives clips as notifications with **Copy / Open**, and sends text, URLs (images in M6) via the share sheet.
+**Status:** 🟡 Working on a real phone (Nothing A142, Android 16) with a Windows computer. A few manual checks remain (§5).
+
+**Goal:** an Android phone joins the group by scanning a QR code (or typing the code), receives clips as notifications with **Copy / Open**, and sends text and links via the share sheet.
 
 **Depends on:** M3.
 
 ---
 
-## 1. What we build
+## 1. What we built
 
-### 1.1 Mobile adapters (`apps/mobile/src/adapters`)
+### Shared app layer — `packages/app` (`@clipbridge/app`)
 
-| Adapter                    | Implementation                                                                                                                              |
-| -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
-| `RnWsTransportAdapter`     | Built-in `WebSocket` (client only). Maps close codes/errors to `AppError`.                                                                  |
-| `ZeroconfDiscoveryAdapter` | `react-native-zeroconf` browse `_clipbridge._tcp`; acquires Android **multicast lock** while browsing.                                      |
-| `ExpoClipboardAdapter`     | `expo-clipboard`. **Write** on received clips (from "Copy" action). **Read only on explicit user action** ("Send clipboard" button in app). |
-| `ExpoNotifierAdapter`      | `expo-notifications` local notifications with category actions **Copy** and **Open** (Open only for URLs).                                  |
-| `ExpoNetworkInfoAdapter`   | `expo-network`: Wi-Fi vs cellular, IP address; subnet derived from IP + /24 heuristic, refined if netmask available.                        |
-| `SecureStoreAdapter`       | `expo-secure-store` (Android Keystore).                                                                                                     |
-| `AsyncStorageAdapter`      | Settings, members, history.                                                                                                                 |
+Moved out of the desktop so both apps use the same code:
 
-### 1.2 Android foreground service (`src/native/android-sync-service`)
+- `AppController` (engine lifecycle, pairing, devices, settings, snapshot) — now also `joinWithLink()` (QR), `sendClip()`, `clipContent()`; `init()` is idempotent.
+- `CredentialStore`, view types (`AppSnapshot`, …), and `presentation/` (error texts, banner/device/pairing view models, diagnostics report).
+- Phones never write received clips to the clipboard automatically (`applyToClipboard` only on computers).
 
-- Small Expo native module (Kotlin) starting a foreground service with a persistent notification "ClipBridge is connected to 2 devices".
-- `foregroundServiceType="connectedDevice"` (validated on Android 14+ in a spike at the start of this milestone; fallback documented if Google rules require another type).
-- Keeps the JS engine and WebSocket alive while the app is in the background.
-- User can turn background sync off in settings (then sync only while the app is open).
-- In-app guide for OEM battery optimization ("Allow ClipBridge to run in background" with a deep link to battery settings).
+### Mobile adapters — `apps/mobile/src/adapters`
 
-### 1.3 Share sheet (send)
+| Adapter                | Implementation                                                                                                                               |
+| ---------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| `RnWebSocketTransport` | Built-in `WebSocket`, dial only, own timeout, error text → `PEER_UNREACHABLE` cause                                                          |
+| `ZeroconfDiscovery`    | `react-native-zeroconf` 0.17 (Android NsdManager), browse only, restart on network change, Local Network permission check (Android 17 / iOS) |
+| `ExpoNetworkInfo`      | Native interface list first (Wi-Fi, **the phone's own hotspot**, USB/Ethernet tethering, real prefix), `expo-network` fallback, 10 s poll    |
+| `ExpoClipboard`        | `expo-clipboard`, write only; read only after a user action ("Send clipboard")                                                               |
+| `ExpoNotifier`         | `expo-notifications`, channel "Received clips", actions **Copy** (no app launch) and **Open** (links)                                        |
+| Storage                | `AsyncStorage` (JSON), `expo-secure-store` (identity and group keys)                                                                         |
+| `RingBufferLogger`     | Last 200 lines, shown under Settings → Diagnostics                                                                                           |
 
-- `expo-share-intent` (or equivalent maintained module) registers ClipBridge for `text/plain` (and `image/*` in M6).
-- Share → ClipBridge → app opens briefly with "Sending to 2 devices… ✓" → returns to previous app.
-- If no desktop is reachable → shows `NO_DESKTOP_ONLINE` / `NO_NETWORK` on that screen; the clip is kept in an outbox and sent when a desktop connects (configurable, default on, max 10 min).
+### Native module — `apps/mobile/modules/sync-service` (Kotlin, Expo Modules API)
 
-### 1.4 Screens
+- Foreground service (`connectedDevice` type) with a silent "ClipBridge — Connected to 1 device" notification, so the JS engine keeps running in the background.
+- Battery-optimization status and settings shortcut.
+- `lanInterfaces()`: IPv4 interfaces with prefix length (needed for hotspots, which the Wi-Fi API reports as "cellular").
 
-- Onboarding: Welcome → **Scan QR** (`expo-camera`) → Waiting for approval → Done.
-- Home: status banner, recent clips (tap = Copy, long press = Open/Share), "Send clipboard" button.
-- Devices: list with status (read-only remove for MVP: remove from desktop).
-- Settings: background sync, notifications, receive on/off, clear history.
-- Diagnostics: IP, Wi-Fi state, discovered devices, last errors, copy diagnostics.
+### Screens (Expo Router)
 
-## 2. How it works
+- **First run:** Scan QR code / type the code (finds computers in pairing mode via mDNS).
+- **Scan:** `expo-camera` QR scanner → join → "Waiting — click Allow on the other computer".
+- **Home:** status banner (+ "Set up again" when removed), "Send clipboard", Recent (Copy / Open), Computers.
+- **Settings:** receive, notifications, stay connected in the background (+ battery hint), this phone's name, reset, diagnostics log.
+- **Share sheet:** `expo-share-intent` (`text/*`) → sent immediately, or kept in history and delivered when a computer connects.
 
-**Laptop → Android**
+## 2. Verified on a real phone
 
-```
-Laptop copy → engine sends CLIP → Android foreground service receives
-  → local notification "🔗 Link from Office Laptop"  [Copy] [Open]
-  → Copy: expo-clipboard write  → paste anywhere
-  → Open: opens URL in default browser
-```
+Phone: Nothing A142, Android 16 (SDK 36). Computer: Windows 11, desktop app (test profile). Network: the computer was connected to **the phone's hotspot**.
 
-**Android → Laptop**
+- [x] Debug build installs and runs (Hermes); identity created with the noble crypto on Hermes.
+- [x] Paired by scanning the QR code + Allow on the computer.
+- [x] "Connected to 1 device" after app restart.
+- [x] Computer copy → notification "Text from …" with **Copy**; links get **Copy** and **Open**.
+- [x] App in the background (Home pressed) → notification still arrives; foreground-service notification shows the status.
+- [x] Share a link to ClipBridge (share intent) → on the computer's clipboard within seconds.
+- [x] Catch-up: a link copied before the phone connected appears in Recent.
 
-```
-Any app → Share → ClipBridge → engine.sendClip → desktop hub
-  → desktop writes clipboard → Ctrl+V on laptop
-```
+## 3. Bugs found on the device and fixed
 
-**Android → other phone:** goes through the desktop hub (forwarding).
+- **Two engines after Android recreated the activity** (JS runtime kept running) → connect/replace loop. `AppController.init()` is now idempotent; test added.
+- **Phone as hotspot looked like "no Wi-Fi"** → native interface list (`ap0`, `swlan0`, …) with the real subnet.
+- **Phones auto-wrote received clips to the clipboard** → only computers do; phones use the notification's Copy.
+- Session close reasons were not logged → `peer disconnected {code, reason}`.
 
-## 3. Permissions (Android manifest via config plugin)
+## 4. Build notes
 
-`INTERNET`, `ACCESS_NETWORK_STATE`, `ACCESS_WIFI_STATE`, `CHANGE_WIFI_MULTICAST_STATE`, `FOREGROUND_SERVICE`, `FOREGROUND_SERVICE_CONNECTED_DEVICE`, `POST_NOTIFICATIONS` (asked at onboarding with explanation), `CAMERA` (asked when scanning).
+- Build with **JDK 17** (`JAVA_HOME=%USERPROFILE%\.jdks\ms-17.0.20.1`). With Android Studio's JDK 25, CMake's `prefab` step fails with "A restricted method in java.lang.System has been called".
+- Expo needs NDK 27.1 (downloaded automatically on first build, ~15 min).
+- `cd apps/mobile && npx expo prebuild --platform android && cd android && gradlew app:assembleDebug`, then `adb install`, `adb reverse tcp:8081 tcp:8081`, `pnpm start`.
 
-## 4. Tasks
+## 5. Still to check by hand
 
-- [ ] Spike: foreground service type + background WebSocket on Android 14/15
-- [ ] Spike: mDNS on a real device with multicast lock
-- [ ] Adapters + tests
-- [ ] Foreground service native module + config plugin
-- [ ] QR scan pairing flow (joiner state machine from core)
-- [ ] Notifications with actions
-- [ ] Share intent + outbox
-- [ ] Screens + presenters
-- [ ] Mobile-specific errors (`NO_NETWORK` on cellular, `NO_DESKTOP_ONLINE`)
-
-## 5. Definition of Done
-
-- Windows + Android and macOS + Android: copy on laptop → notification on phone within 2 s (app in background, screen on).
-- Share a link from Chrome on Android → paste on laptop.
-- Phone on mobile data → clear `NO_NETWORK` message.
-- Phone killed by the user → on reopen, catches up with latest clips from the desktop history.
+- [ ] Tap **Copy** on a notification while the app is in the background, then paste in another app.
+- [ ] Phone on a normal Wi-Fi network (not hotspot) with the computer on the same Wi-Fi.
+- [ ] Turn Wi-Fi/hotspot off → "Not connected to Wi-Fi"; computer app closed → "No computer is online".
+- [ ] Leave the phone idle for 30+ minutes (battery optimization on/off) and check that clips still arrive.
+- [ ] Type the code instead of scanning.
+- [ ] Release APK signing (M8).

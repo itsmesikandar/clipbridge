@@ -1,7 +1,7 @@
+import { formatRelativeTime } from '@clipbridge/app/presentation';
 import { type ReactElement, useState } from 'react';
 
 import type { ClipBridgeApi, HistoryItemView } from '../../../../shared/ipc-contract';
-import { formatRelativeTime } from '../../lib/format-time';
 
 const KIND_LABELS = { text: 'Text', url: 'Link', image: 'Image' } as const;
 

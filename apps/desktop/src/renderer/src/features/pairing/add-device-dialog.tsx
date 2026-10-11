@@ -1,8 +1,8 @@
+import { svgToDataUrl, toHostingModel } from '@clipbridge/app/presentation';
 import type { ReactElement } from 'react';
 
 import type { HostingView, PairingApi } from '../../../../shared/ipc-contract';
 import { useNow } from '../../state/use-app-snapshot';
-import { svgToDataUrl, toHostingModel } from './pairing-model';
 
 interface AddDeviceDialogProps {
   readonly hosting: HostingView;

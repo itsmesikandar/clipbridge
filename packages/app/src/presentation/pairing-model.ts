@@ -1,7 +1,7 @@
 import type { AppError, DevicePlatform } from '@clipbridge/core';
 
-import type { HostingView, JoiningView } from '../../../../shared/ipc-contract';
-import { describeIssue } from '../../i18n/issue-text';
+import type { HostingView, JoiningView } from '../view-types';
+import { describeIssue } from './issue-text';
 
 export const PLATFORM_NAMES: Record<DevicePlatform, string> = {
   windows: 'Windows computer',

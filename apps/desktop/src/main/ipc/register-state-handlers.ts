@@ -1,8 +1,8 @@
+import type { AppController } from '@clipbridge/app';
 import { type BrowserWindow, ipcMain } from 'electron';
 
-import { type AppSnapshot, IPC_CHANNELS, type IpcResult } from '../../shared/ipc-contract';
+import { type ActionResult, type AppSnapshot, IPC_CHANNELS } from '../../shared/ipc-contract';
 import { historyItemIdSchema, parseSettingsPatch } from '../../shared/ipc-schemas';
-import type { AppController } from '../app-controller';
 
 /** Coalesces bursts of state changes (e.g. 4 peers connecting) into one push. */
 const PUSH_DELAY_MS = 50;
@@ -21,7 +21,7 @@ export function registerStateHandlers(
 
   ipcMain.handle(
     IPC_CHANNELS.copyHistoryItem,
-    (_event, input: unknown): Promise<IpcResult<void>> => {
+    (_event, input: unknown): Promise<ActionResult<void>> => {
       const id = historyItemIdSchema.safeParse(input);
       if (!id.success) return Promise.resolve({ ok: false, message: 'Invalid item.' });
       return controller.copyHistoryItem(id.data);

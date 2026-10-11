@@ -1,10 +1,10 @@
+import type { AppController } from '@clipbridge/app';
 import { ipcMain } from 'electron';
 
-import { IPC_CHANNELS, type IpcResult } from '../../shared/ipc-contract';
+import { type ActionResult, IPC_CHANNELS } from '../../shared/ipc-contract';
 import { deviceIdSchema, deviceNameSchema, joinRequestSchema } from '../../shared/ipc-schemas';
-import type { AppController } from '../app-controller';
 
-const invalid: IpcResult<never> = { ok: false, message: 'Invalid input.' };
+const invalid: ActionResult<never> = { ok: false, message: 'Invalid input.' };
 
 /** Group setup, "Add device", joining, and device management. */
 export function registerPairingHandlers(controller: AppController): void {

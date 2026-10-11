@@ -1,8 +1,8 @@
 import type { DevicePlatform, PeerView } from '@clipbridge/core';
 
-import { describeIssue } from '../../i18n/issue-text';
-import { formatRelativeTime } from '../../lib/format-time';
-import type { Tone } from '../status/status-model';
+import { formatRelativeTime } from './format-time';
+import { describeIssue } from './issue-text';
+import type { Tone } from './status-model';
 
 export interface DeviceRowModel {
   readonly id: string;

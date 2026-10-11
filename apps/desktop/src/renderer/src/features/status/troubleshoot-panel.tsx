@@ -1,8 +1,8 @@
+import type { BannerModel } from '@clipbridge/app/presentation';
 import { subnetLabel } from '@clipbridge/core';
 import { type ReactElement, useState } from 'react';
 
 import type { ClipBridgeApi } from '../../../../shared/ipc-contract';
-import type { BannerModel } from './status-model';
 import { useDiagnosticsPresenter } from './use-diagnostics-presenter';
 
 interface TroubleshootPanelProps {

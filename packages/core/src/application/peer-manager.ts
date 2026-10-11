@@ -420,6 +420,11 @@ export class PeerManager {
     record.lastSeenSubnet = this.currentSubnet;
 
     session.onClose((reason) => {
+      this.deps.logger.info('peer disconnected', {
+        peerId: record.member.id,
+        code: reason.code,
+        reason: reason.message.slice(0, 120),
+      });
       if (record.session !== session) return;
       record.session = null;
       record.lastSeenAt = this.deps.clock.now();

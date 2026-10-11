@@ -8,6 +8,7 @@
 import {
   type AppError,
   type Clip,
+  type ClipContent,
   CORE_VERSION,
   createEngine as createCoreEngine,
   type DevicePlatform,
@@ -22,33 +23,36 @@ import {
   isDeviceId,
   type JoinAttempt,
   joinGroup,
+  type JoinOptions,
   type LocalDevice,
   type LoggerPort,
   normalizePairingCode,
   type PairingHostSession,
   pairingSecret,
+  parsePairingLink,
   type PeerAddress,
   PROTOCOL_VERSION,
   type ReadonlyStore,
+  roleOf,
   signMembership,
   type StoragePort,
   type Unsubscribe,
 } from '@clipbridge/core';
 import { z } from 'zod';
 
+import type { CredentialStore } from './credential-store';
+import { createSimpleStore, type SimpleStore } from './simple-store';
 import type {
+  ActionResult,
   AppSnapshot,
   DiagnosticsView,
   HistoryItemView,
   HostingView,
-  IpcResult,
   JoiningView,
   JoinRequestInput,
   SettingsPatch,
   SettingsView,
-} from '../shared/ipc-contract';
-import type { CredentialStore } from './identity/credential-store';
-import { createSimpleStore, type SimpleStore } from './simple-store';
+} from './view-types';
 
 const SETTINGS_KEY = 'settings';
 const PREVIEW_LENGTH = 300;
@@ -95,7 +99,7 @@ const notPairedStatus: AppSnapshot['status'] = {
   issue: null,
 };
 const idleJoin: JoiningView = { searching: false, hosts: [], state: 'idle', error: null };
-const done: IpcResult<void> = { ok: true, value: undefined };
+const done: ActionResult<void> = { ok: true, value: undefined };
 
 function fail(message: string, issue?: AppError): { ok: false; message: string; issue?: AppError } {
   return issue ? { ok: false, message, issue } : { ok: false, message };
@@ -114,6 +118,7 @@ export class AppController {
   private joinAttempt: JoinAttempt | null = null;
   private joinView: JoiningView = idleJoin;
   private readonly store: SimpleStore<AppSnapshot>;
+  private initialized: Promise<void> | null = null;
 
   constructor(private readonly deps: AppControllerDeps) {
     this.store = createSimpleStore(this.buildSnapshot());
@@ -123,7 +128,17 @@ export class AppController {
     return this.store;
   }
 
-  async init(): Promise<void> {
+  /**
+   * Loads identity and group and starts syncing. Safe to call more than once
+   * (e.g. Android recreates the activity while the JS runtime keeps running):
+   * later calls return the first call's promise instead of starting a second engine.
+   */
+  init(): Promise<void> {
+    this.initialized ??= this.initialize();
+    return this.initialized;
+  }
+
+  private async initialize(): Promise<void> {
     const { credentials, ports } = this.deps;
     this.self = await credentials.loadOrCreateDevice(
       this.deps.defaultDeviceName,
@@ -153,7 +168,7 @@ export class AppController {
     this.publish();
   }
 
-  async copyHistoryItem(id: string): Promise<IpcResult<void>> {
+  async copyHistoryItem(id: string): Promise<ActionResult<void>> {
     const entry = this.engine?.history.get().find((candidate) => candidate.clip.id === id);
     if (!entry) return fail('This item is no longer in the history.');
     const written = await this.deps.ports.clipboard.write(entry.clip.content);
@@ -183,8 +198,8 @@ export class AppController {
   // ------------------------------------------------------------------ group setup
 
   /** Starts a new group with only this computer in it. */
-  async createGroup(): Promise<IpcResult<void>> {
-    if (this.group) return fail('This computer is already in a group.');
+  async createGroup(): Promise<ActionResult<void>> {
+    if (this.group) return fail('This device is already in a group.');
     const self = this.requireSelf();
     const { random, clock } = this.deps.ports;
     const membership = signMembership(
@@ -208,7 +223,7 @@ export class AppController {
 
   // ------------------------------------------------------------------ hosting ("Add device")
 
-  async startHosting(): Promise<IpcResult<void>> {
+  async startHosting(): Promise<ActionResult<void>> {
     if (!this.engine) return fail('Create or join a group first.');
     if (this.hosting?.session.isActive) return done;
     const started = this.engine.startPairing();
@@ -274,23 +289,51 @@ export class AppController {
     this.publishJoin();
   }
 
-  async join(input: JoinRequestInput): Promise<IpcResult<void>> {
-    if (this.group) return fail('This computer is already in a group.');
+  /** Joins with a code typed by the user (computers). */
+  async join(input: JoinRequestInput): Promise<ActionResult<void>> {
+    if (this.group) return fail('This device is already in a group.');
     const code = normalizePairingCode(input.code);
     if (!code) return fail('Check the code: it has 12 letters and numbers, like K7QM-2XPA-9FRT.');
     const addresses = this.joinAddresses(input);
     if (!addresses.ok) return addresses;
+    return this.runJoin({
+      addresses: addresses.value,
+      method: 'code',
+      secret: pairingSecret('code', code),
+    });
+  }
 
+  /** Joins with the text of a scanned pairing QR code (phones). */
+  async joinWithLink(text: string): Promise<ActionResult<void>> {
+    if (this.group) return fail('This device is already in a group.');
+    const link = parsePairingLink(text.trim());
+    if (!link)
+      return fail(
+        'This is not a ClipBridge pairing code. Scan the QR code shown under "Add device".',
+      );
+    return this.runJoin({
+      addresses: link.hosts.map((host) => ({ host, port: link.port })),
+      method: 'qr',
+      secret: link.token,
+      expectedHostSignPublicKey: link.hostSignPublicKey,
+    });
+  }
+
+  /** Sends content the user picked explicitly (share sheet, "Send clipboard"). */
+  sendClip(content: ClipContent): ActionResult<void> {
+    if (!this.engine) return fail('Pair this device first.');
+    const sent = this.engine.sendClip(content);
+    return sent.ok ? done : fail(sent.error.message, sent.error);
+  }
+
+  /** Content of a history item, e.g. for a notification's Copy / Open action. */
+  clipContent(id: string): ClipContent | null {
+    return this.engine?.history.get().find((entry) => entry.clip.id === id)?.clip.content ?? null;
+  }
+
+  private async runJoin(options: Omit<JoinOptions, 'self'>): Promise<ActionResult<void>> {
     this.joinAttempt?.cancel();
-    const attempt = joinGroup(
-      {
-        self: this.requireSelf(),
-        addresses: addresses.value,
-        method: 'code',
-        secret: pairingSecret('code', code),
-      },
-      this.deps.ports,
-    );
+    const attempt = joinGroup({ self: this.requireSelf(), ...options }, this.deps.ports);
     this.joinAttempt = attempt;
     const unsubscribe = attempt.state.subscribe((state) => {
       this.joinView = {
@@ -326,7 +369,7 @@ export class AppController {
 
   // ------------------------------------------------------------------ devices
 
-  async renameDevice(id: string, name: string): Promise<IpcResult<void>> {
+  async renameDevice(id: string, name: string): Promise<ActionResult<void>> {
     if (!this.engine || !isDeviceId(id)) return fail('Unknown device.');
     const renamed = this.engine.renameMember(id, name);
     if (!renamed.ok) return fail('Names must be 1–64 characters.', renamed.error);
@@ -337,7 +380,7 @@ export class AppController {
     return done;
   }
 
-  removeDevice(id: string): IpcResult<void> {
+  removeDevice(id: string): ActionResult<void> {
     if (!this.engine || !isDeviceId(id)) return fail('Unknown device.');
     if (id === this.self?.device.id) {
       return fail('Use "Reset this computer" to remove this computer.');
@@ -347,7 +390,7 @@ export class AppController {
   }
 
   /** Forgets the group on this computer. Other devices should remove it too. */
-  async resetThisDevice(): Promise<IpcResult<void>> {
+  async resetThisDevice(): Promise<ActionResult<void>> {
     this.stopHosting();
     await this.stopEngine();
     await this.deps.credentials.clearGroup();
@@ -359,7 +402,7 @@ export class AppController {
 
   // ------------------------------------------------------------------ internals
 
-  private joinAddresses(input: JoinRequestInput): IpcResult<PeerAddress[]> {
+  private joinAddresses(input: JoinRequestInput): ActionResult<PeerAddress[]> {
     if (input.hostId) {
       const service = this.pairingHosts.get(input.hostId);
       if (!service) return fail('That computer is no longer showing a code.');
@@ -398,7 +441,8 @@ export class AppController {
       self,
       group,
       ports: this.deps.ports,
-      settings: { ...this.settings, applyToClipboard: true },
+      // Computers write received clips to the clipboard; phones let the user tap Copy.
+      settings: { ...this.settings, applyToClipboard: roleOf(self.device.platform) === 'hub' },
       onGroupChanged: (next) => {
         this.group = next;
         void this.deps.credentials.saveGroup(next);

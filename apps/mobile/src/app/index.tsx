@@ -1,9 +1,14 @@
 import type { ReactElement } from 'react';
 
-import { AboutView } from '@/features/about/about-view';
-import { useAboutPresenter } from '@/features/about/use-about-presenter';
+import { HomeView } from '@/features/home/home-view';
+import { OnboardingView } from '@/features/onboarding/onboarding-view';
+import { useAppSnapshot } from '@/state/app-context';
 
 export default function HomeScreen(): ReactElement {
-  const about = useAboutPresenter();
-  return <AboutView state={about} />;
+  const snapshot = useAppSnapshot();
+  return snapshot.pairing.paired ? (
+    <HomeView snapshot={snapshot} />
+  ) : (
+    <OnboardingView joining={snapshot.pairing.joining} />
+  );
 }

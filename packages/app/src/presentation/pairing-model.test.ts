@@ -1,7 +1,7 @@
 import { appError } from '@clipbridge/core';
 import { describe, expect, it } from 'vitest';
 
-import type { HostingView } from '../../../../shared/ipc-contract';
+import type { HostingView } from '../view-types';
 import { describeJoinState, formatCountdown, svgToDataUrl, toHostingModel } from './pairing-model';
 
 const base: HostingView = {

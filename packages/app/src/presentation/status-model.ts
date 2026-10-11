@@ -1,6 +1,6 @@
 import type { ConnectionStatus } from '@clipbridge/core';
 
-import { describeIssue } from '../../i18n/issue-text';
+import { describeIssue } from './issue-text';
 
 export type Tone = 'ok' | 'info' | 'warn' | 'error';
 

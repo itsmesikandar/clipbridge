@@ -1,0 +1,34 @@
+{
+  "name": "@clipbridge/app",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Platform-neutral app layer shared by desktop and mobile: app controller, credential storage, view state and user-facing texts.",
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    },
+    "./presentation": {
+      "types": "./src/presentation/index.ts",
+      "default": "./src/presentation/index.ts"
+    }
+  },
+  "scripts": {
+    "lint": "eslint . --max-warnings=0",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@clipbridge/core": "workspace:*",
+    "zod": "4.6.5"
+  },
+  "devDependencies": {
+    "@clipbridge/eslint-config": "workspace:*",
+    "@clipbridge/tsconfig": "workspace:*",
+    "eslint": "10.12.0",
+    "typescript": "6.0.3",
+    "vitest": "5.0.3"
+  }
+}

@@ -10,7 +10,7 @@ import {
 import { describe, expect, it } from 'vitest';
 
 import { AppController } from './app-controller';
-import { CredentialStore, decodeEpochKeys, encodeEpochKeys } from './identity/credential-store';
+import { CredentialStore, decodeEpochKeys, encodeEpochKeys } from './credential-store';
 
 class MemoryStorage implements StoragePort {
   readonly data = new Map<string, string>();
@@ -52,7 +52,12 @@ function world() {
 
   function computer(
     name: string,
-    options: { storage?: MemoryStorage; secure?: MemorySecureStorage; nodeName?: string } = {},
+    options: {
+      storage?: MemoryStorage;
+      secure?: MemorySecureStorage;
+      nodeName?: string;
+      platform?: 'windows' | 'android';
+    } = {},
   ) {
     const node = network.createNode(options.nodeName ?? name, { subnet: HOME });
     const storage = options.storage ?? new MemoryStorage();
@@ -68,13 +73,13 @@ function world() {
         transport: node.transport,
         discovery: node.discovery,
         networkInfo: node.networkInfo,
-        clipboard,
+        clipboard: options.platform === 'android' ? clipboard.asPhoneClipboard() : clipboard,
         notifier: new FakeNotifier(),
       },
       credentials: new CredentialStore(storage, secure, random),
       storage,
       logger: new MemoryLogger(),
-      platform: 'windows',
+      platform: options.platform ?? 'windows',
       defaultDeviceName: name,
       appVersion: '0.1.0',
       logFile: 'main.log',
@@ -211,6 +216,50 @@ describe('AppController pairing', () => {
   });
 });
 
+describe('AppController on a phone', () => {
+  it('joins by scanning the QR code and sends a shared link', async () => {
+    const { clock, computer } = world();
+    const laptop = computer('Laptop');
+    const phone = computer('Pixel', { platform: 'android' });
+    await laptop.controller.init();
+    await phone.controller.init();
+    await laptop.controller.createGroup();
+    await laptop.controller.startHosting();
+    const qr =
+      /data-link="([^"]+)"/.exec(
+        laptop.controller.snapshot.get().pairing.hosting?.qrSvg ?? '',
+      )?.[1] ?? '';
+
+    expect(await phone.controller.joinWithLink('https://example.com')).toMatchObject({ ok: false });
+    const joining = phone.controller.joinWithLink(qr);
+    await clock.advance(50);
+    laptop.controller.approveJoin();
+    expect(await joining).toEqual({ ok: true, value: undefined });
+    await clock.advance(1_000);
+    expect(phone.controller.snapshot.get().status).toMatchObject({
+      kind: 'CONNECTED',
+      connectedCount: 1,
+    });
+
+    expect(phone.controller.sendClip({ kind: 'url', url: 'https://example.com/shared' })).toEqual({
+      ok: true,
+      value: undefined,
+    });
+    await clock.advance(100);
+    expect(laptop.clipboard.content).toEqual({ kind: 'url', url: 'https://example.com/shared' });
+
+    laptop.clipboard.userCopies({ kind: 'text', text: 'to phone' });
+    await clock.advance(100);
+    const [latest] = phone.controller.snapshot.get().history;
+    expect(phone.controller.clipContent(latest?.id ?? '')).toEqual({
+      kind: 'text',
+      text: 'to phone',
+    });
+    expect(phone.clipboard.writes).toEqual([]); // phones wait for the user to tap Copy
+    expect(phone.controller.sendClip({ kind: 'text', text: '' }).ok).toBe(false);
+  });
+});
+
 describe('AppController devices', () => {
   it('renames and removes devices; the removed one is told', async () => {
     const { clock, computer } = world();
@@ -278,6 +327,19 @@ describe('AppController devices', () => {
 });
 
 describe('AppController basics', () => {
+  it('starts only one engine when init() is called again', async () => {
+    const { clock, computer } = world();
+    const laptop = computer('Laptop');
+    const desktop = computer('Desktop');
+    await laptop.controller.init();
+    await desktop.controller.init();
+    await pair(laptop, desktop, clock);
+    await Promise.all([desktop.controller.init(), desktop.controller.init()]);
+    await clock.advance(5_000);
+    expect(laptop.node.connections.size).toBe(1);
+    expect(desktop.controller.snapshot.get().status.kind).toBe('CONNECTED');
+  });
+
   it('persists settings', async () => {
     const { computer } = world();
     const laptop = computer('Laptop');

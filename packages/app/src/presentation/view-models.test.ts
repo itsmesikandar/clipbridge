@@ -7,11 +7,11 @@ import {
 } from '@clipbridge/core';
 import { describe, expect, it } from 'vitest';
 
-import { sortDevices, toDeviceRow } from './features/devices/device-model';
-import { toBannerModel } from './features/status/status-model';
-import { toReport } from './features/status/use-diagnostics-presenter';
-import { describeIssue, formatBytes } from './i18n/issue-text';
-import { formatRelativeTime } from './lib/format-time';
+import { sortDevices, toDeviceRow } from './device-model';
+import { toReport } from './diagnostics-report';
+import { formatRelativeTime } from './format-time';
+import { describeIssue, formatBytes } from './issue-text';
+import { toBannerModel } from './status-model';
 
 /** One sample per error code, so a new code without text fails to compile or this test. */
 const SAMPLES: { [C in AppErrorCode]: AppError<C> } = {

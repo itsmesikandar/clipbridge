@@ -21,6 +21,7 @@
     "zod": "4.6.5"
   },
   "devDependencies": {
+    "@clipbridge/app": "workspace:*",
     "@clipbridge/core": "workspace:*",
     "@clipbridge/eslint-config": "workspace:*",
     "@clipbridge/tsconfig": "workspace:*",

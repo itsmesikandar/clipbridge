@@ -1,8 +1,8 @@
+import { sortDevices, toDeviceRow } from '@clipbridge/app/presentation';
 import type { PeerView } from '@clipbridge/core';
 import { type ReactElement, useState } from 'react';
 
 import type { DevicesApi } from '../../../../shared/ipc-contract';
-import { sortDevices, toDeviceRow } from './device-model';
 
 interface DeviceListProps {
   readonly devices: readonly PeerView[];

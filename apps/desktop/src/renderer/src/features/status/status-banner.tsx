@@ -1,6 +1,5 @@
+import type { BannerModel } from '@clipbridge/app/presentation';
 import type { ReactElement } from 'react';
-
-import type { BannerModel } from './status-model';
 
 interface StatusBannerProps {
   readonly model: BannerModel;
